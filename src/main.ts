@@ -16,7 +16,6 @@ export default class ScopeTabsPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		await this.refreshColorConfiguration(false);
 		this.addSettingTab(new ScopeTabsSettingTab(this.app, this));
 		this.addCommand({
 			id: 'manage-missing-book-config-notes',
@@ -33,20 +32,8 @@ export default class ScopeTabsPlugin extends Plugin {
 		});
 
 		this.app.workspace.onLayoutReady(() => {
-			this.navigation.install();
-			this.decorations.refresh();
-			void this.maybeNotifyMissingConfigFiles();
+			void this.initializeWorkspace();
 		});
-
-		this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.decorations.refresh()));
-		this.registerEvent(this.app.workspace.on('layout-change', () => this.decorations.refresh()));
-		this.registerEvent(this.app.workspace.on('file-open', () => this.decorations.refresh()));
-		this.registerEvent(this.app.vault.on('create', () => void this.handleVaultStructureChange()));
-		this.registerEvent(this.app.vault.on('delete', () => void this.handleVaultStructureChange()));
-		this.registerEvent(this.app.vault.on('rename', () => void this.handleVaultStructureChange()));
-		this.registerEvent(this.app.metadataCache.on('changed', () => {
-			if (this.settings.colorMode === 'frontmatter') this.decorations.refresh();
-		}));
 	}
 
 	onunload(): void {
@@ -83,6 +70,23 @@ export default class ScopeTabsPlugin extends Plugin {
 		}
 		const books = this.scopeResolver.listBooks();
 		new MissingConfigModal(this.app, this, this.colors.getMissingConfigBooks(books)).open();
+	}
+
+	private async initializeWorkspace(): Promise<void> {
+		await this.refreshColorConfiguration(false);
+		this.navigation.install();
+		this.decorations.refresh();
+		await this.maybeNotifyMissingConfigFiles();
+
+		this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.decorations.refresh()));
+		this.registerEvent(this.app.workspace.on('layout-change', () => this.decorations.refresh()));
+		this.registerEvent(this.app.workspace.on('file-open', () => this.decorations.refresh()));
+		this.registerEvent(this.app.vault.on('create', () => void this.handleVaultStructureChange()));
+		this.registerEvent(this.app.vault.on('delete', () => void this.handleVaultStructureChange()));
+		this.registerEvent(this.app.vault.on('rename', () => void this.handleVaultStructureChange()));
+		this.registerEvent(this.app.metadataCache.on('changed', () => {
+			if (this.settings.colorMode === 'frontmatter') this.decorations.refresh();
+		}));
 	}
 
 	private async maybeNotifyMissingConfigFiles(): Promise<void> {

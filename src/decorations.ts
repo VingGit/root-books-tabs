@@ -9,7 +9,7 @@ interface InternalTabGroup {
 
 export class DecorationController {
 	private customStyleEls = new Map<Document, HTMLStyleElement>();
-	private minimizedGroups = new WeakSet<object>();
+	private minimizeListeners = new Map<object, { el: HTMLElement; handler: (event: MouseEvent) => void }>();
 
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
 
@@ -26,10 +26,21 @@ export class DecorationController {
 
 	cleanup(): void {
 		const docs = new Set<Document>([document, ...this.customStyleEls.keys()]);
+		for (const { el, handler } of this.minimizeListeners.values()) el.removeEventListener('click', handler);
+		this.minimizeListeners.clear();
 		for (const style of this.customStyleEls.values()) style.remove();
 		this.customStyleEls.clear();
 		for (const doc of docs) {
 			doc.querySelectorAll('.scope-tabs-book-controls, .scope-tabs-book-label').forEach((el) => el.remove());
+			doc.querySelectorAll<HTMLElement>('.scope-tabs-group-minimized').forEach((el) => el.removeClass('scope-tabs-group-minimized'));
+			doc.querySelectorAll<HTMLElement>('.scope-tabs-color-tab').forEach((el) => {
+				el.removeClass('scope-tabs-color-tab');
+				el.removeAttribute('data-scope-tabs-tab-style');
+			});
+			doc.querySelectorAll<HTMLElement>('.scope-tabs-active-book-folder').forEach((el) => {
+				el.removeClass('scope-tabs-active-book-folder');
+				el.removeAttribute('data-scope-tabs-explorer-style');
+			});
 			doc.querySelectorAll<HTMLElement>('[data-scope-tabs-book]').forEach((el) => {
 				el.removeAttribute('data-scope-tabs-book');
 				el.style.removeProperty('--scope-tabs-book-color');
@@ -40,21 +51,26 @@ export class DecorationController {
 	minimizeGroup(leaf: WorkspaceLeaf): void {
 		const group = leaf.parent as unknown as InternalTabGroup;
 		if (!group?.containerEl) return;
-		this.minimizedGroups.add(group as object);
 		group.containerEl.addClass('scope-tabs-group-minimized');
+		const existing = this.minimizeListeners.get(group as object);
+		if (existing) existing.el.removeEventListener('click', existing.handler);
 		const restoreOnTabClick = (event: MouseEvent) => {
 			const target = event.target instanceof Element ? event.target : null;
 			if (!target?.closest('.workspace-tab-header')) return;
-			group.containerEl?.removeEventListener('click', restoreOnTabClick);
 			this.restoreGroup(leaf);
 		};
 		group.containerEl.addEventListener('click', restoreOnTabClick);
+		this.minimizeListeners.set(group as object, { el: group.containerEl, handler: restoreOnTabClick });
 	}
 
 	restoreGroup(leaf: WorkspaceLeaf): void {
 		const group = leaf.parent as unknown as InternalTabGroup;
 		if (!group?.containerEl) return;
-		this.minimizedGroups.delete(group as object);
+		const listener = this.minimizeListeners.get(group as object);
+		if (listener) {
+			listener.el.removeEventListener('click', listener.handler);
+			this.minimizeListeners.delete(group as object);
+		}
 		group.containerEl.removeClass('scope-tabs-group-minimized');
 	}
 

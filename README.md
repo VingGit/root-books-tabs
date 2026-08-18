@@ -4,7 +4,7 @@ Scope Tabs was created to make it easier to browse **offline Obsidian vaults tha
 
 In the spirit of root-index-panels, **every first-level folder in the vault is treated as a separate “book.”** That book boundary is the default scope that drives tab groups, splits/pop-out windows, book colors, and the small book label shown above notes.
 
-If a vault does not contain at least two first-level folders, Scope Tabs does nothing to navigation or decoration.
+If a vault does not contain at least two first-level folders, Scope Tabs does nothing to navigation.
 
 > **Status:** `0.1.0` is the first development build. The routing core uses Obsidian workspace APIs; a few visual compatibility features necessarily touch Obsidian's DOM or tab-group internals and are isolated so they can be repaired without changing the scope/navigation model.
 
@@ -34,13 +34,23 @@ Files stored directly in the vault root have no book scope and keep normal Obsid
 
 Navigating from one note to another note in the same first-level folder opens the destination in a **new tab in the same book tab group**.
 
-Settings control whether the new tab is inserted to the **right** or **left**, and whether it receives focus automatically.
+Settings control:
+
+- whether the new tab is inserted to the **right** or **left**;
+- whether the new tab receives focus automatically.
 
 ### Different book
 
 Navigating to a note whose first-level folder differs from the current note opens/reuses that book's tab group and focuses it.
 
-A new book can be opened right, left, above, below, in a rotating right → down → left → up **spiral** pattern, or in an external Obsidian pop-out window.
+A new book can be opened:
+
+- right of the current group (default);
+- left;
+- above;
+- below;
+- in a rotating right → down → left → up **spiral** pattern;
+- in an external Obsidian pop-out window.
 
 Scope Tabs tries to keep **one managed tab group per book**. If a destination book already has a managed group, navigation opens a new tab there instead of creating another group.
 
@@ -56,7 +66,7 @@ Managed book groups receive controls at the right edge of their tab-header area:
 - **Pop out** — reproduces the book's tabs in an external Obsidian window and removes the old in-workspace group.
 - **Close book** — closes every tab in the book group.
 
-External pop-out windows remain ordinary operating-system windows, so normal OS window minimize/maximize controls continue to apply.
+Obsidian's public plugin API does not expose an operating-system window-minimize command. In a pop-out, the Scope Tabs **Minimize** control therefore collapses the book inside that Obsidian window; the native operating-system minimize/maximize controls remain available for minimizing the whole pop-out window.
 
 ## Book colors
 
@@ -64,7 +74,12 @@ Book colors have two mutually exclusive sources.
 
 ### Manual mode
 
-Scope Tabs automatically lists every first-level folder in **Settings → Scope Tabs**. Each row has an HTML color picker and a `#RRGGBB` text field. A stable, dark-theme-friendly color is generated for newly discovered books until you choose another one.
+Scope Tabs automatically lists every first-level folder in **Settings → Scope Tabs**. Each row has:
+
+- an HTML color picker;
+- a `#RRGGBB` text field.
+
+A stable, dark-theme-friendly color is generated for newly discovered books until you choose another one.
 
 ### Frontmatter mode
 
@@ -89,15 +104,39 @@ The filename is entered in settings **without `.md`**.
 
 When a config note exists but the configured color property is missing or invalid, Scope Tabs adds a valid color with `FileManager.processFrontMatter()`. The operation is idempotent: the property is not duplicated.
 
-If a config note is missing, Scope Tabs can notify you. Run **Scope Tabs: Manage missing book config notes** to create the file for selected books, create it for all missing books, or select **Never notify me**.
+If a config note is missing, Scope Tabs can notify you. Run **Scope Tabs: Manage missing book config notes** to open a manager where you can:
+
+- create the file for selected books;
+- create it for all missing books;
+- select **Never notify me**.
+
+There is also a persistent toggle in settings for missing-config notifications.
 
 ## Visual book markers
 
-The note label is enabled by default and shows a small colored book name before note content.
+### Note label
 
-Tab coloring is enabled by default. Available styles are underline, full colored background, colored dot before the title, or custom CSS. The active tab uses a subtly brighter variant of the same book color.
+Enabled by default. A small colored book name is inserted at the top of each Markdown note view before the note content.
 
-File explorer coloring applies only to the first-level folder containing the **currently selected note**. Styles are left edge, folder underline, full folder vertical bar, or custom CSS.
+### Tabs
+
+Tab coloring is enabled by default. Available styles:
+
+- underline;
+- full colored background;
+- colored dot before the tab title;
+- custom CSS.
+
+The active tab uses a subtly brighter variant of the same book color.
+
+### File explorer
+
+Only the first-level folder containing the **currently selected note** is colored. Available styles:
+
+- subtle colored left edge;
+- underline the first-level folder row;
+- color the vertical edge spanning the entire folder tree;
+- custom CSS.
 
 Custom CSS can use:
 
@@ -106,21 +145,38 @@ Custom CSS can use:
 [data-scope-tabs-book]
 ```
 
+The custom CSS text is stored with Scope Tabs settings and injected locally into Obsidian windows. No network request is made.
+
 ## Settings persistence
 
-Scope Tabs stores settings through Obsidian's `Plugin.loadData()` / `Plugin.saveData()` mechanism, normally under:
+Scope Tabs stores settings through Obsidian's `Plugin.loadData()` / `Plugin.saveData()` mechanism. In a normal vault this results in plugin data under:
 
 ```text
 .obsidian/plugins/scope-tabs/
 ```
 
-The vault notes themselves are modified only when frontmatter mode is used to add/create configured per-book color metadata. Use **Reset to defaults** to restore default settings.
+The vault notes themselves are modified only when frontmatter mode is used to add/create the configured per-book color metadata.
+
+Use **Reset to defaults** in the settings page to restore the default configuration. Detected book colors are regenerated afterward.
 
 ## Privacy and offline use
 
-Scope Tabs is designed for offline vault use: no telemetry, external services, network requests, remote code, or filesystem access outside the vault.
+Scope Tabs is designed for offline vault use.
+
+- No telemetry.
+- No external service.
+- No network request.
+- No remote code.
+- No reading or writing outside the vault.
+
+The only note-content mutation is the explicit frontmatter color-management feature described above.
 
 ## Development
+
+Requirements:
+
+- Node.js 20+ recommended;
+- npm.
 
 ```bash
 npm install
@@ -134,7 +190,13 @@ npm run build
 npm run lint
 ```
 
-For local testing, place/clone the repository at `<Vault>/.obsidian/plugins/scope-tabs/`, run `npm run dev`, reload Obsidian, then enable **Scope Tabs** under **Settings → Community plugins**.
+For local testing, place/clone the repository at:
+
+```text
+<Vault>/.obsidian/plugins/scope-tabs/
+```
+
+Run `npm run dev`, reload Obsidian, then enable **Scope Tabs** under **Settings → Community plugins**.
 
 ## Architecture
 
@@ -150,15 +212,37 @@ src/
 └── types.ts            shared settings/domain types
 ```
 
-The design boundary is `scope resolution → routing decision → workspace operation → decoration`. Do not make routing depend directly on Explorer Focus, root-index-panels, or another folder-focus plugin; future integrations belong behind scope resolvers/adapters.
+The important design boundary is:
 
-## Compatibility boundary
+```text
+scope resolution → routing decision → workspace operation → decoration
+```
 
-Obsidian exposes core leaf, split, tab, and pop-out primitives, but not every visual tab-header/file-explorer operation as a stable public API. Left-side tab insertion therefore uses a feature-detected compatibility path, while tab-header and explorer decoration depend on Obsidian DOM class names. Those pieces are isolated from core scope/routing logic.
+Do not make routing logic depend directly on Explorer Focus, root-index-panels, or any other folder-focus plugin. Integrations can be added later as alternative scope resolvers/adapters.
+
+## Known compatibility boundary
+
+Obsidian exposes the core leaf, split, tab, and pop-out primitives required for routing. It does **not** expose every visual tab-header/file-explorer operation as a stable public API.
+
+Consequently:
+
+- left-side tab insertion uses a feature-detected tab-group compatibility path;
+- tab-header decoration and file-explorer decoration depend on Obsidian DOM class names;
+- these pieces are intentionally kept in `src/decorations.ts` / the tab-order helper in `src/navigation.ts`.
+
+If an Obsidian update changes those internals, normal routing should remain repairable independently of visual compatibility code.
 
 ## Release files
 
-An Obsidian release attaches `main.js`, `manifest.json`, and `styles.css`. The included tag-triggered GitHub Actions workflow builds them and creates a draft release.
+An Obsidian release must attach these files individually:
+
+```text
+main.js
+manifest.json
+styles.css
+```
+
+The included GitHub Actions release workflow builds them when a version tag is pushed and creates a draft GitHub release.
 
 ## License
 

@@ -19,6 +19,7 @@ interface InternalTabGroup {
 
 export class BookNavigationController {
 	private originalOpenFile: WorkspaceLeaf['openFile'] | null = null;
+	private patchedOpenFile: WorkspaceLeaf['openFile'] | null = null;
 	private readonly managedGroups = new WeakSet<object>();
 	private spiralStep = 0;
 	private routing = false;
@@ -31,7 +32,8 @@ export class BookNavigationController {
 		this.originalOpenFile = original;
 		const controller = this;
 
-		WorkspaceLeaf.prototype.openFile = async function (
+		const patched: WorkspaceLeaf['openFile'] = async function (
+			this: WorkspaceLeaf,
 			file: TFile,
 			openState?: OpenViewState,
 		): Promise<void> {
@@ -40,15 +42,22 @@ export class BookNavigationController {
 			}
 			return controller.routeOpen(this, file, openState, original);
 		};
+		this.patchedOpenFile = patched;
+		WorkspaceLeaf.prototype.openFile = patched;
 
 		this.adoptExistingMainGroups();
 	}
 
 	uninstall(): void {
-		if (this.originalOpenFile && WorkspaceLeaf.prototype.openFile !== this.originalOpenFile) {
+		if (
+			this.originalOpenFile &&
+			this.patchedOpenFile &&
+			WorkspaceLeaf.prototype.openFile === this.patchedOpenFile
+		) {
 			WorkspaceLeaf.prototype.openFile = this.originalOpenFile;
 		}
 		this.originalOpenFile = null;
+		this.patchedOpenFile = null;
 	}
 
 	markGroupManaged(leaf: WorkspaceLeaf): void {
@@ -107,6 +116,8 @@ export class BookNavigationController {
 	): Promise<void> {
 		const sourceLeaf = this.plugin.app.workspace.getMostRecentLeaf();
 		if (!sourceLeaf || destinationLeaf !== sourceLeaf) {
+			// Obsidian or the user has explicitly selected a different destination leaf.
+			// Respect commands such as "Open in new window" instead of second-guessing them.
 			return original.call(destinationLeaf, file, openState);
 		}
 
@@ -115,6 +126,8 @@ export class BookNavigationController {
 		const targetBook = this.plugin.scopeResolver.resolveFile(file);
 		if (!sourceBook || !targetBook) return original.call(destinationLeaf, file, openState);
 
+		// A pop-out window not created/adopted as a Scope Tabs book is a free window.
+		// In a free window all subsequent navigation remains in that window regardless of folder.
 		if (sourceLeaf.getRoot() instanceof WorkspaceWindow && !this.isManagedGroup(sourceLeaf)) {
 			return this.openTabInGroup(sourceLeaf, file, openState, original, this.plugin.settings.focusNewTabs);
 		}
@@ -174,8 +187,7 @@ export class BookNavigationController {
 			this.markGroupManaged(leaf);
 			await original.call(leaf, file, openState);
 			this.plugin.app.workspace.revealLeaf(leaf);
-		} catch (error) {
-			console.error('Scope Tabs: failed to open book group', error);
+		} catch {
 			new Notice('Scope Tabs could not create the requested book window. Falling back to the current tab.');
 			await original.call(sourceLeaf, file, openState);
 		} finally {
@@ -210,8 +222,8 @@ export class BookNavigationController {
 		try {
 			parent.removeChild(created);
 			parent.insertChild(referenceIndex, created);
-		} catch (error) {
-			console.debug('Scope Tabs: this Obsidian version does not expose tab reordering internals.', error);
+		} catch {
+			return;
 		}
 	}
 

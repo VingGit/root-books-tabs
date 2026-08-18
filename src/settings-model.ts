@@ -21,7 +21,8 @@ export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 
 export function sanitizeConfigBaseName(value: string): string {
 	const trimmed = value.trim().replace(/\.md$/i, '');
-	return trimmed || DEFAULT_SETTINGS.configFileBaseName;
+	const segment = trimmed.split(/[\\/]/).pop()?.trim() ?? '';
+	return segment || DEFAULT_SETTINGS.configFileBaseName;
 }
 
 export function sanitizeFrontmatterProperty(value: string): string {

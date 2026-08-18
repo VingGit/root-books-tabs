@@ -1,4 +1,4 @@
-import { Notice, TFile } from 'obsidian';
+import { Notice, TFile, normalizePath } from 'obsidian';
 import type ScopeTabsPlugin from './main';
 import type { BookScope } from './types';
 import { sanitizeConfigBaseName, sanitizeFrontmatterProperty } from './settings-model';
@@ -29,7 +29,7 @@ export class BookColorService {
 
 	getConfigPath(book: BookScope): string {
 		const base = sanitizeConfigBaseName(this.plugin.settings.configFileBaseName);
-		return `${book.folderPath}/${base}.md`;
+		return normalizePath(`${book.folderPath}/${base}.md`);
 	}
 
 	getMissingConfigBooks(books: BookScope[]): BookScope[] {
