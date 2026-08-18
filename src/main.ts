@@ -1,114 +1,98 @@
-import {
-	Editor,
-	MarkdownView,
-	MarkdownFileInfo,
-	Modal,
-	Notice,
-	Plugin,
-} from 'obsidian';
-import {
-	DEFAULT_SETTINGS,
-	MyPluginSettings,
-	SampleSettingTab,
-} from './settings';
+import { Notice, Plugin } from 'obsidian';
+import { BookColorService } from './colors';
+import { DecorationController } from './decorations';
+import { BookNavigationController } from './navigation';
+import { FirstLevelFolderScopeResolver } from './scope';
+import { DEFAULT_SETTINGS } from './settings-model';
+import { MissingConfigModal, ScopeTabsSettingTab } from './settings';
+import type { ScopeTabsSettings } from './types';
 
-// Remember to rename these classes and interfaces!
+export default class ScopeTabsPlugin extends Plugin {
+	settings!: ScopeTabsSettings;
+	readonly scopeResolver = new FirstLevelFolderScopeResolver(this.app.vault);
+	readonly colors = new BookColorService(this);
+	readonly navigation = new BookNavigationController(this);
+	readonly decorations = new DecorationController(this);
 
-export default class MyPlugin extends Plugin {
-	settings!: MyPluginSettings;
-
-	async onload() {
+	async onload(): Promise<void> {
 		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (_evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
+		await this.refreshColorConfiguration(false);
+		this.addSettingTab(new ScopeTabsSettingTab(this.app, this));
 		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			},
+			id: 'manage-missing-book-config-notes',
+			name: 'Manage missing book config notes',
+			callback: () => this.openMissingConfigManager(),
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
 		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (
-				editor: Editor,
-				_ctx: MarkdownView | MarkdownFileInfo,
-			) => {
-				editor.replaceSelection('Sample editor command');
-			},
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView =
-					this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
+			id: 'refresh-book-colors-and-decorations',
+			name: 'Refresh book colors and decorations',
+			callback: async () => {
+				await this.refreshColorConfiguration(false);
+				new Notice('Scope Tabs refreshed book colors and decorations.');
 			},
 		});
 
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(activeDocument, 'click', (_evt: MouseEvent) => {
-			new Notice('Click');
+		this.app.workspace.onLayoutReady(() => {
+			this.navigation.install();
+			this.decorations.refresh();
+			void this.maybeNotifyMissingConfigFiles();
 		});
 
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(
-			window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000),
-		);
+		this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.decorations.refresh()));
+		this.registerEvent(this.app.workspace.on('layout-change', () => this.decorations.refresh()));
+		this.registerEvent(this.app.workspace.on('file-open', () => this.decorations.refresh()));
+		this.registerEvent(this.app.vault.on('create', () => void this.handleVaultStructureChange()));
+		this.registerEvent(this.app.vault.on('delete', () => void this.handleVaultStructureChange()));
+		this.registerEvent(this.app.vault.on('rename', () => void this.handleVaultStructureChange()));
+		this.registerEvent(this.app.metadataCache.on('changed', () => {
+			if (this.settings.colorMode === 'frontmatter') this.decorations.refresh();
+		}));
 	}
 
-	onunload() {}
-
-	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as Partial<MyPluginSettings>,
-		);
+	onunload(): void {
+		this.navigation.uninstall();
+		this.decorations.cleanup();
 	}
 
-	async saveSettings() {
+	async loadSettings(): Promise<void> {
+		const saved = (await this.loadData()) as Partial<ScopeTabsSettings> | null;
+		this.settings = Object.assign(structuredClone(DEFAULT_SETTINGS), saved ?? {});
+		this.settings.manualColors = { ...DEFAULT_SETTINGS.manualColors, ...(saved?.manualColors ?? {}) };
+	}
+
+	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 	}
-}
 
-class SampleModal extends Modal {
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText('Woah!');
+	async refreshColorConfiguration(notify: boolean): Promise<void> {
+		if (!this.scopeResolver.hasMultipleBooks()) {
+			this.decorations.refresh();
+			return;
+		}
+		const books = this.scopeResolver.listBooks();
+		await this.colors.ensureManualColors(books);
+		if (this.settings.colorMode === 'frontmatter') await this.colors.ensureFrontmatterColors(books);
+		this.decorations.refresh();
+		if (notify) await this.maybeNotifyMissingConfigFiles();
 	}
 
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
+	openMissingConfigManager(): void {
+		if (!this.scopeResolver.hasMultipleBooks()) {
+			new Notice('Scope Tabs is inactive because this vault has fewer than two first-level folders.');
+			return;
+		}
+		const books = this.scopeResolver.listBooks();
+		new MissingConfigModal(this.app, this, this.colors.getMissingConfigBooks(books)).open();
+	}
+
+	private async maybeNotifyMissingConfigFiles(): Promise<void> {
+		if (this.settings.colorMode !== 'frontmatter' || !this.settings.notifyMissingConfigFiles) return;
+		const missing = this.colors.getMissingConfigBooks(this.scopeResolver.listBooks());
+		if (missing.length === 0) return;
+		new Notice(`Scope Tabs: ${missing.length} book${missing.length === 1 ? '' : 's'} missing ${this.settings.configFileBaseName}.md. Run “Scope Tabs: Manage missing book config notes” to create them, or disable notifications in settings.`, 9000);
+	}
+
+	private async handleVaultStructureChange(): Promise<void> {
+		await this.refreshColorConfiguration(false);
 	}
 }

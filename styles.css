@@ -1,8 +1,119 @@
-/*
+.scope-tabs-book-label {
+	color: var(--scope-tabs-book-color);
+	font-size: var(--font-ui-smaller);
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	opacity: 0.78;
+	padding: 0.4rem 0.75rem 0.15rem;
+	text-transform: none;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.workspace-tab-header.scope-tabs-color-tab {
+	--scope-tabs-active-color: color-mix(in srgb, var(--scope-tabs-book-color) 78%, white);
+}
 
-If your plugin does not need CSS, delete this file.
+.workspace-tab-header.scope-tabs-color-tab[data-scope-tabs-tab-style="underline"] {
+	box-shadow: inset 0 -2px 0 var(--scope-tabs-book-color);
+}
 
-*/
+.workspace-tab-header.scope-tabs-color-tab.is-active[data-scope-tabs-tab-style="underline"] {
+	box-shadow: inset 0 -3px 0 var(--scope-tabs-active-color);
+}
+
+.workspace-tab-header.scope-tabs-color-tab[data-scope-tabs-tab-style="background"] {
+	background: color-mix(in srgb, var(--scope-tabs-book-color) 62%, var(--background-secondary));
+}
+
+.workspace-tab-header.scope-tabs-color-tab.is-active[data-scope-tabs-tab-style="background"] {
+	background: color-mix(in srgb, var(--scope-tabs-book-color) 72%, white 8%);
+}
+
+.workspace-tab-header.scope-tabs-color-tab[data-scope-tabs-tab-style="dot"] .workspace-tab-header-inner-title::before {
+	content: "";
+	display: inline-block;
+	width: 0.52em;
+	height: 0.52em;
+	margin-right: 0.45em;
+	border-radius: 999px;
+	background: var(--scope-tabs-book-color);
+	vertical-align: 0.08em;
+}
+
+.workspace-tab-header.scope-tabs-color-tab.is-active[data-scope-tabs-tab-style="dot"] .workspace-tab-header-inner-title::before {
+	background: var(--scope-tabs-active-color);
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--scope-tabs-active-color) 60%, transparent);
+}
+
+.nav-folder.scope-tabs-active-book-folder[data-scope-tabs-explorer-style="edge"] > .nav-folder-title {
+	border-left: 3px solid var(--scope-tabs-book-color);
+	padding-left: calc(var(--size-4-2) - 3px);
+}
+
+.nav-folder.scope-tabs-active-book-folder[data-scope-tabs-explorer-style="underline"] > .nav-folder-title {
+	box-shadow: inset 0 -2px 0 var(--scope-tabs-book-color);
+}
+
+.nav-folder.scope-tabs-active-book-folder[data-scope-tabs-explorer-style="bar"] {
+	border-left: 3px solid var(--scope-tabs-book-color);
+}
+
+.scope-tabs-book-controls {
+	display: flex;
+	align-items: center;
+	gap: 1px;
+	margin-left: auto;
+	padding: 0 2px;
+	z-index: 3;
+}
+
+.scope-tabs-book-controls .clickable-icon {
+	padding: 4px;
+}
+
+.scope-tabs-group-minimized {
+	flex: 0 0 38px !important;
+	min-width: 38px !important;
+	min-height: 38px !important;
+	overflow: hidden !important;
+}
+
+.scope-tabs-group-minimized > .workspace-tab-container,
+.scope-tabs-group-minimized .workspace-leaf-content {
+	display: none !important;
+}
+
+.scope-tabs-group-minimized .workspace-tab-header-container {
+	min-width: 38px;
+	min-height: 38px;
+}
+
+.scope-tabs-group-minimized .workspace-tab-header-container-inner {
+	max-width: 38px;
+	overflow: hidden;
+}
+
+.scope-tabs-radio-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	margin-left: 0.75rem;
+}
+
+.scope-tabs-hex-input {
+	width: 8.5em;
+	font-family: var(--font-monospace);
+}
+
+.scope-tabs-css-field textarea,
+textarea.scope-tabs-css-field {
+	width: min(42rem, 70vw);
+	font-family: var(--font-monospace);
+}
+
+.scope-tabs-modal-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	justify-content: flex-end;
+	margin-top: 1rem;
+}

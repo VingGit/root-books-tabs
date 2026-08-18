@@ -1,92 +1,165 @@
-# Obsidian Sample Plugin
+# Scope Tabs
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+Scope Tabs was created to make it easier to browse **offline Obsidian vaults that are also published with [root-index-panels](https://github.com/VingGit/root-index-panels)**. It is intended to pair especially well with a folder-focus plugin such as [Explorer Focus](https://github.com/davidvkimball/obsidian-explorer-focus): the folder-focus plugin controls what the file explorer shows, while Scope Tabs controls where navigation opens.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+In the spirit of root-index-panels, **every first-level folder in the vault is treated as a separate “book.”** That book boundary is the default scope that drives tab groups, splits/pop-out windows, book colors, and the small book label shown above notes.
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
+If a vault does not contain at least two first-level folders, Scope Tabs does nothing to navigation or decoration.
 
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open modal (simple)" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and outputs a Notice on click.
-- Registers a global interval which logs 'setInterval' to the console.
+> **Status:** `0.1.0` is the first development build. The routing core uses Obsidian workspace APIs; a few visual compatibility features necessarily touch Obsidian's DOM or tab-group internals and are isolated so they can be repaired without changing the scope/navigation model.
 
-## First time developing plugins?
+## Core model
 
-Quick starting guide for new plugin devs:
-
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `src/main.ts` to `main.js`.
-- Make changes to `src/main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
-
-## Releasing new releases
-
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
-
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
-
-## Adding your plugin to the community plugin list
-
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
-
-## How to use
-
-- Clone this repo.
-- Make sure your NodeJS is at least v18 (`node --version`).
-- `npm i` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
-
-## Manually installing the plugin
-
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
-
-## Improve code quality with eslint
-
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code.
-- This project already has eslint preconfigured, you can invoke a check by running`npm run lint`
-- Together with a custom eslint [plugin](https://github.com/obsidianmd/eslint-plugin) for Obsidan specific code guidelines.
-- A GitHub action is preconfigured to automatically lint every commit on all branches.
-
-## Funding URL
-
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-	"fundingUrl": "https://buymeacoffee.com"
-}
+```text
+Vault/
+├── Programming/        ← book
+│   ├── index.md
+│   ├── Python.md
+│   └── Java.md
+├── History/            ← book
+│   ├── index.md
+│   └── Rome.md
+└── Security/           ← book
+    ├── index.md
+    └── SSH.md
 ```
 
-If you have multiple URLs, you can also do:
+A file is scoped only by its **first path element**. The current implementation deliberately does not expose configurable scope depth yet, but scope resolution is isolated in `src/scope.ts` so another resolver can be added later.
 
-```json
-{
-	"fundingUrl": {
-		"Buy Me a Coffee": "https://buymeacoffee.com",
-		"GitHub Sponsor": "https://github.com/sponsors",
-		"Patreon": "https://www.patreon.com/"
-	}
-}
+Files stored directly in the vault root have no book scope and keep normal Obsidian behavior.
+
+## Navigation behavior
+
+### Same book
+
+Navigating from one note to another note in the same first-level folder opens the destination in a **new tab in the same book tab group**.
+
+Settings control whether the new tab is inserted to the **right** or **left**, and whether it receives focus automatically.
+
+### Different book
+
+Navigating to a note whose first-level folder differs from the current note opens/reuses that book's tab group and focuses it.
+
+A new book can be opened right, left, above, below, in a rotating right → down → left → up **spiral** pattern, or in an external Obsidian pop-out window.
+
+Scope Tabs tries to keep **one managed tab group per book**. If a destination book already has a managed group, navigation opens a new tab there instead of creating another group.
+
+### Explicit user windows
+
+Scope Tabs respects a destination leaf that Obsidian or the user explicitly created. In particular, an external pop-out window created manually from the file tree is treated as a **free window**: while working in it, navigation keeps creating tabs in that window regardless of first-level folder.
+
+### Book controls
+
+Managed book groups receive controls at the right edge of their tab-header area:
+
+- **Minimize** — collapses the group to a compact header-sized strip while preserving the group and its place in the tiling layout. Navigating back into that book restores it.
+- **Pop out** — reproduces the book's tabs in an external Obsidian window and removes the old in-workspace group.
+- **Close book** — closes every tab in the book group.
+
+External pop-out windows remain ordinary operating-system windows, so normal OS window minimize/maximize controls continue to apply.
+
+## Book colors
+
+Book colors have two mutually exclusive sources.
+
+### Manual mode
+
+Scope Tabs automatically lists every first-level folder in **Settings → Scope Tabs**. Each row has an HTML color picker and a `#RRGGBB` text field. A stable, dark-theme-friendly color is generated for newly discovered books until you choose another one.
+
+### Frontmatter mode
+
+Scope Tabs looks for a Markdown config note in every first-level folder.
+
+Defaults:
+
+```text
+config note: index.md
+property:    color
 ```
 
-## API Documentation
+Example:
 
-See https://docs.obsidian.md
+```yaml
+---
+color: "#69b7ff"
+---
+```
+
+The filename is entered in settings **without `.md`**.
+
+When a config note exists but the configured color property is missing or invalid, Scope Tabs adds a valid color with `FileManager.processFrontMatter()`. The operation is idempotent: the property is not duplicated.
+
+If a config note is missing, Scope Tabs can notify you. Run **Scope Tabs: Manage missing book config notes** to create the file for selected books, create it for all missing books, or select **Never notify me**.
+
+## Visual book markers
+
+The note label is enabled by default and shows a small colored book name before note content.
+
+Tab coloring is enabled by default. Available styles are underline, full colored background, colored dot before the title, or custom CSS. The active tab uses a subtly brighter variant of the same book color.
+
+File explorer coloring applies only to the first-level folder containing the **currently selected note**. Styles are left edge, folder underline, full folder vertical bar, or custom CSS.
+
+Custom CSS can use:
+
+```css
+--scope-tabs-book-color
+[data-scope-tabs-book]
+```
+
+## Settings persistence
+
+Scope Tabs stores settings through Obsidian's `Plugin.loadData()` / `Plugin.saveData()` mechanism, normally under:
+
+```text
+.obsidian/plugins/scope-tabs/
+```
+
+The vault notes themselves are modified only when frontmatter mode is used to add/create configured per-book color metadata. Use **Reset to defaults** to restore default settings.
+
+## Privacy and offline use
+
+Scope Tabs is designed for offline vault use: no telemetry, external services, network requests, remote code, or filesystem access outside the vault.
+
+## Development
+
+```bash
+npm install
+npm run dev
+```
+
+Production checks:
+
+```bash
+npm run build
+npm run lint
+```
+
+For local testing, place/clone the repository at `<Vault>/.obsidian/plugins/scope-tabs/`, run `npm run dev`, reload Obsidian, then enable **Scope Tabs** under **Settings → Community plugins**.
+
+## Architecture
+
+```text
+src/
+├── main.ts             plugin lifecycle and registrations
+├── scope.ts            first-level-folder scope resolver
+├── navigation.ts       navigation interception and book-group routing
+├── colors.ts           manual/frontmatter color resolution and config creation
+├── decorations.ts      note, tab, explorer, and book-group UI decoration
+├── settings.ts         settings UI and missing-config modal
+├── settings-model.ts   defaults and input normalization
+└── types.ts            shared settings/domain types
+```
+
+The design boundary is `scope resolution → routing decision → workspace operation → decoration`. Do not make routing depend directly on Explorer Focus, root-index-panels, or another folder-focus plugin; future integrations belong behind scope resolvers/adapters.
+
+## Compatibility boundary
+
+Obsidian exposes core leaf, split, tab, and pop-out primitives, but not every visual tab-header/file-explorer operation as a stable public API. Left-side tab insertion therefore uses a feature-detected compatibility path, while tab-header and explorer decoration depend on Obsidian DOM class names. Those pieces are isolated from core scope/routing logic.
+
+## Release files
+
+An Obsidian release attaches `main.js`, `manifest.json`, and `styles.css`. The included tag-triggered GitHub Actions workflow builds them and creates a draft release.
+
+## License
+
+0BSD. See `LICENSE`.

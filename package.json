@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
-	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"name": "scope-tabs",
+	"version": "0.1.0",
+	"description": "Scope-aware tab and book-window navigation for Obsidian.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {
@@ -10,7 +10,7 @@
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"lint": "eslint ."
 	},
-	"keywords": [],
+	"keywords": ["obsidian", "tabs", "folders", "navigation", "quartz"],
 	"license": "0-BSD",
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
@@ -18,7 +18,7 @@
 		"esbuild": "0.25.5",
 		"eslint": "^9.39.4",
 		"eslint-plugin-obsidianmd": "^0.4.0",
-		"globals": "^17.6.0",
+		"globals": "^17.6.1",
 		"jiti": "^2.6.1",
 		"obsidian": "latest",
 		"typescript": "^5.8.3",
