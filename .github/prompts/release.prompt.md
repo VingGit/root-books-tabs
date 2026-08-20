@@ -19,4 +19,4 @@ Checklist:
 6. Confirm `main.js`, `manifest.json`, and `styles.css` exist for release.
 7. Summarize user-visible changes for release notes.
 8. Use a Git tag exactly equal to the version with no leading `v`.
-9. Do not commit generated `main.js`; attach it to the GitHub release via the workflow.
+9. Do not commit generated `main.js`; attach it to a public GitHub release via the workflow.

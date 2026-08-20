@@ -85,10 +85,9 @@ Book colors have two mutually exclusive sources.
 Root Books Tabs automatically lists every first-level folder in **Settings → Root Books Tabs**. Each row has:
 
 - an HTML color picker;
-- a `#RRGGBB` text field;
-- a black/white dot that selects the tab-label foreground used by every tab color style.
+- a `#RRGGBB` text field.
 
-A stable, dark-theme-friendly color is generated for newly discovered books until you choose another one. Changing a book RGB value resets its text to whichever of black or white has the higher [WCAG 2.0 relative-luminance contrast](https://www.w3.org/WAI/WCAG20/versions/guidelines/wcag20-guidelines-20081211-letter.pdf). Clicking the dot overrides that automatic choice without displaying a recommendation.
+A stable, dark-theme-friendly color is generated for newly discovered books until you choose another one. Manual tab text defaults to white. When **Tab color style** is **Background**, the Decorations section displays a black/white dot for each book; those controls are hidden for every other tab style.
 
 ### Frontmatter mode
 
@@ -111,7 +110,7 @@ tab-text-bg: black
 ---
 ```
 
-`tab-text-bg` accepts `black`, `white`, or any valid CSS hex color. It applies to every tab style. A missing or invalid value resolves to white and is repaired the next time Root Books Tabs refreshes the book config metadata.
+`tab-text-bg` accepts `black`, `white`, or any valid CSS hex color. It applies only to the Background tab style. A missing or invalid value resolves to white and is repaired the next time Root Books Tabs refreshes the book config metadata. Its property-name setting also appears only while Background is selected.
 
 The filename is entered in settings **without `.md`**.
 

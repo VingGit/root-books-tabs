@@ -1,5 +1,5 @@
 import { App, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, type SliderComponent, type TextComponent } from 'obsidian';
-import { getAutomaticTabTextColor, isHexColor, isManualTabTextColor } from './colors';
+import { isHexColor, isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
 import type { BookScope, ColorMode, ManualTabTextColor } from './types';
@@ -9,6 +9,9 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	private frontmatterSection: HTMLElement | null = null;
 	private tabOptionsSection: HTMLElement | null = null;
 	private customCssSection: HTMLElement | null = null;
+	private backgroundTextSection: HTMLElement | null = null;
+	private manualBackgroundTextSection: HTMLElement | null = null;
+	private frontmatterBackgroundTextSection: HTMLElement | null = null;
 	private gridOverflowControl: HTMLElement | null = null;
 	private gridDimensionsSection: HTMLElement | null = null;
 
@@ -193,52 +196,26 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	private renderManualColors(containerEl: HTMLElement): void {
 		containerEl.createEl('p', {
 			cls: 'setting-item-description',
-			text: 'First-level folders are detected automatically. The black/white dot chooses tab-label text for every tab color style. Its default is recalculated whenever a book RGB value changes; click the dot to override it.',
+			text: 'First-level folders are detected automatically. These controls set the book color; Background-style text colors are configured under Decorations.',
 		});
 		for (const book of this.scopeTabs.scopeResolver.listBooks()) {
 			const row = new Setting(containerEl).setName(book.name);
 			row.settingEl.addClass('scope-tabs-manual-color-row');
 			const color = this.scopeTabs.settings.manualColors[book.id] ?? this.scopeTabs.colors.getColor(book);
-			const configuredTextColor = this.scopeTabs.settings.manualTabTextColors[book.id];
-			let textColor: ManualTabTextColor = isManualTabTextColor(configuredTextColor)
-				? configuredTextColor
-				: getAutomaticTabTextColor(color);
 			const colorInput = row.controlEl.createEl('input', { type: 'color' });
 			colorInput.value = color;
 			const hexInput = row.controlEl.createEl('input', { type: 'text', cls: 'scope-tabs-hex-input' });
 			hexInput.value = color;
 			hexInput.placeholder = '#RRGGBB';
-			const textToggle = row.controlEl.createEl('button', {
-				cls: 'scope-tabs-tab-text-toggle',
-				attr: { type: 'button' },
-			});
-			const dot = textToggle.createSpan({ cls: 'scope-tabs-tab-text-dot' });
-			const updateTextControl = () => {
-				const selectedName = textColor === '#000000' ? 'black' : 'white';
-				dot.style.background = textColor;
-				textToggle.setAttr('aria-label', `Tab text is ${selectedName}. Click to use ${selectedName === 'black' ? 'white' : 'black'}.`);
-				textToggle.setAttr('title', `Tab text: ${selectedName}`);
-			};
-			updateTextControl();
 			const commit = async (value: string) => {
 				if (!isHexColor(value)) return;
 				const normalized = value.toLowerCase();
 				this.scopeTabs.settings.manualColors[book.id] = normalized;
-				textColor = getAutomaticTabTextColor(normalized);
-				this.scopeTabs.settings.manualTabTextColors[book.id] = textColor;
 				colorInput.value = normalized;
 				hexInput.value = normalized;
-				updateTextControl();
 				await this.scopeTabs.saveSettings();
 				this.scopeTabs.decorations.refresh();
 			};
-			textToggle.addEventListener('click', () => {
-				textColor = textColor === '#000000' ? '#ffffff' : '#000000';
-				this.scopeTabs.settings.manualTabTextColors[book.id] = textColor;
-				updateTextControl();
-				void this.scopeTabs.saveSettings();
-				this.scopeTabs.decorations.refresh();
-			});
 			colorInput.addEventListener('input', () => void commit(colorInput.value));
 			hexInput.addEventListener('change', () => {
 				if (!isHexColor(hexInput.value)) {
@@ -265,14 +242,6 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			.addText((text) => text.setValue(this.scopeTabs.settings.colorFrontmatterProperty).setPlaceholder('color').onChange(async (value: string) => {
 				this.scopeTabs.settings.colorFrontmatterProperty = sanitizeFrontmatterProperty(value);
 				await this.scopeTabs.saveSettings();
-			}));
-		new Setting(containerEl)
-			.setName('Tab text frontmatter property')
-			.setDesc('Tab text color for every tab style. Values may be any CSS hex color, black, or white. Missing or invalid values resolve to white and are repaired when colors refresh.')
-			.addText((text) => text.setValue(this.scopeTabs.settings.tabTextFrontmatterProperty).setPlaceholder('tab-text-bg').onChange(async (value: string) => {
-				this.scopeTabs.settings.tabTextFrontmatterProperty = sanitizeTabTextFrontmatterProperty(value);
-				await this.scopeTabs.saveSettings();
-				this.scopeTabs.decorations.refresh();
 			}));
 		new Setting(containerEl)
 			.setName('Notify about missing config notes')
@@ -315,6 +284,21 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 					await this.scopeTabs.saveSettings();
 					this.scopeTabs.decorations.refresh();
 				}));
+		this.backgroundTextSection = this.tabOptionsSection.createDiv({ cls: 'scope-tabs-conditional-section scope-tabs-background-text-section' });
+		new Setting(this.backgroundTextSection)
+			.setName('Background tab text')
+			.setDesc('These foreground controls apply only when Tab color style is Background. Other styles keep Obsidian’s normal tab text color.');
+		this.manualBackgroundTextSection = this.backgroundTextSection.createDiv({ cls: 'scope-tabs-conditional-section' });
+		this.renderManualBackgroundTextColors(this.manualBackgroundTextSection);
+		this.frontmatterBackgroundTextSection = this.backgroundTextSection.createDiv({ cls: 'scope-tabs-conditional-section' });
+		new Setting(this.frontmatterBackgroundTextSection)
+			.setName('Tab text frontmatter property')
+			.setDesc('Background-style tab text may be any CSS hex color, black, or white. Missing or invalid values resolve to white and are repaired when colors refresh.')
+			.addText((text) => text.setValue(this.scopeTabs.settings.tabTextFrontmatterProperty).setPlaceholder('tab-text-bg').onChange(async (value: string) => {
+				this.scopeTabs.settings.tabTextFrontmatterProperty = sanitizeTabTextFrontmatterProperty(value);
+				await this.scopeTabs.saveSettings();
+				this.scopeTabs.decorations.refresh();
+			}));
 		this.customCssSection = this.tabOptionsSection.createDiv({ cls: 'scope-tabs-conditional-section' });
 		new Setting(this.customCssSection)
 			.setName('Custom tab CSS')
@@ -322,11 +306,47 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			.addButton((button) => button.setButtonText('Open CSS editor').onClick(() => new CustomTabCssModal(this.app, this.scopeTabs).open()));
 	}
 
+	private renderManualBackgroundTextColors(containerEl: HTMLElement): void {
+		containerEl.createEl('p', {
+			cls: 'setting-item-description',
+			text: 'Manual Background text defaults to white. Use each dot to switch that book between white and black.',
+		});
+		for (const book of this.scopeTabs.scopeResolver.listBooks()) {
+			const row = new Setting(containerEl).setName(book.name);
+			const configured = this.scopeTabs.settings.manualTabTextColors[book.id];
+			let textColor: ManualTabTextColor = isManualTabTextColor(configured)
+				? configured
+				: '#ffffff';
+			const textToggle = row.controlEl.createEl('button', {
+				cls: 'scope-tabs-tab-text-toggle',
+				attr: { type: 'button' },
+			});
+			const dot = textToggle.createSpan({ cls: 'scope-tabs-tab-text-dot' });
+			const updateControl = () => {
+				const selectedName = textColor === '#000000' ? 'black' : 'white';
+				dot.style.background = textColor;
+				textToggle.setAttr('aria-label', `Background tab text is ${selectedName}. Click to use ${selectedName === 'black' ? 'white' : 'black'}.`);
+				textToggle.setAttr('title', `Background tab text: ${selectedName}`);
+			};
+			updateControl();
+			textToggle.addEventListener('click', () => {
+				textColor = textColor === '#000000' ? '#ffffff' : '#000000';
+				this.scopeTabs.settings.manualTabTextColors[book.id] = textColor;
+				updateControl();
+				void this.scopeTabs.saveSettings();
+				this.scopeTabs.decorations.refresh();
+			});
+		}
+	}
+
 	private updateConditionalSections(): void {
 		this.manualSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'manual');
 		this.frontmatterSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'frontmatter');
 		this.tabOptionsSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs);
 		this.customCssSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs || this.scopeTabs.settings.tabDecorationStyle !== 'custom');
+		this.backgroundTextSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs || this.scopeTabs.settings.tabDecorationStyle !== 'background');
+		this.manualBackgroundTextSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'manual');
+		this.frontmatterBackgroundTextSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'frontmatter');
 		const gridHidden = this.scopeTabs.settings.bookSplitDirection !== 'grid';
 		this.gridOverflowControl?.toggleClass('is-hidden', gridHidden);
 		this.gridDimensionsSection?.toggleClass('is-hidden', gridHidden);

@@ -63,7 +63,7 @@ The controller patches `WorkspaceLeaf.prototype.openFile` because reacting only 
 
 Owns book color resolution and per-book Markdown config metadata.
 
-Manual mode stores book backgrounds plus a black/white tab foreground in plugin settings. The automatic manual foreground is selected by comparing WCAG relative-luminance contrast against black and white whenever the background changes, without displaying a recommendation. Frontmatter mode reads independently configured background and tab-text properties; the text value accepts `black`, `white`, or any CSS hex color and falls back to white. The foreground applies to every tab style. Existing config notes are edited with `FileManager.processFrontMatter()` and missing notes are created only after explicit user action.
+Manual mode stores book backgrounds plus an optional black/white Background-style tab foreground in plugin settings. Its default is always white, and its per-book controls live beside the Background tab-style setting rather than the book-color inputs. Frontmatter mode reads independently configured background and tab-text properties; the text value accepts `black`, `white`, or any CSS hex color and falls back to white. Both foreground sources apply only to Background tabs. Existing config notes are edited with `FileManager.processFrontMatter()` and missing notes are created only after explicit user action.
 
 ### `src/decorations.ts`
 
@@ -167,7 +167,7 @@ At minimum test:
 - close/pop-out transfer controls, whole-pop-out pinning, pseudo-tab group dragging within/between main and pop-out windows, and menu/long-press tab regrouping;
 - pop-out focus, pin/unpin, native-close return, and intentional-close suppression;
 - pop-out transfer of mixed Markdown and non-Markdown tabs;
-- manual and frontmatter colors, automatic/manual foreground selection without recommendation text, all-style foreground application, and custom frontmatter tab-text colors;
+- manual and frontmatter colors, white manual foreground defaults, Background-only black/white overrides, and custom frontmatter tab-text colors;
 - missing config creation for selected/all books;
 - duplicate-frontmatter prevention;
 - resource routing/color for PNG, SVG, PDF, Canvas, and Bases;

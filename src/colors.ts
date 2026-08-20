@@ -16,9 +16,8 @@ export class BookColorService {
 				this.plugin.settings.manualColors[book.id] = randomDarkThemeColor(book.id);
 				changed = true;
 			}
-			const background = this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
 			if (!isManualTabTextColor(this.plugin.settings.manualTabTextColors[book.id])) {
-				this.plugin.settings.manualTabTextColors[book.id] = getAutomaticTabTextColor(background);
+				this.plugin.settings.manualTabTextColors[book.id] = '#ffffff';
 				changed = true;
 			}
 		}
@@ -40,7 +39,7 @@ export class BookColorService {
 		const configured = this.plugin.settings.manualTabTextColors[book.id];
 		return isManualTabTextColor(configured)
 			? configured
-			: getAutomaticTabTextColor(this.getColor(book));
+			: '#ffffff';
 	}
 
 	getConfigPath(book: BookScope): string {
@@ -124,21 +123,6 @@ export function normalizeTabTextColor(value: unknown): string | null {
 
 export function isManualTabTextColor(value: string | undefined): value is ManualTabTextColor {
 	return value === '#000000' || value === '#ffffff';
-}
-
-export function getAutomaticTabTextColor(background: string): ManualTabTextColor {
-	if (!isHexColor(background)) return '#ffffff';
-	const luminance = getRelativeLuminance(background);
-	const blackContrast = (luminance + 0.05) / 0.05;
-	const whiteContrast = 1.05 / (luminance + 0.05);
-	return blackContrast >= whiteContrast ? '#000000' : '#ffffff';
-}
-
-function getRelativeLuminance(color: string): number {
-	const channels = [color.slice(1, 3), color.slice(3, 5), color.slice(5, 7)]
-		.map((channel) => Number.parseInt(channel, 16) / 255)
-		.map((channel) => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
-	return 0.2126 * (channels[0] ?? 0) + 0.7152 * (channels[1] ?? 0) + 0.0722 * (channels[2] ?? 0);
 }
 
 function getRecordValue(value: unknown, key: string): unknown {

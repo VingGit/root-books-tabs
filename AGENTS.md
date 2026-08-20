@@ -80,7 +80,7 @@ Defaults:
 - config base name: `index`
 - frontmatter key: `color`
 - value format: `#RRGGBB`
-- tab text key: `tab-text-bg` (legacy key name, applied to every tab style)
+- tab text key: `tab-text-bg` (legacy key name, applied only to the Background tab style)
 - tab text value: `black`, `white`, or any valid CSS hex color; invalid/missing frontmatter falls back to white
 
 Rules:
@@ -88,7 +88,7 @@ Rules:
 - manual and frontmatter modes are mutually exclusive;
 - first-level folders are detected from the vault, not a stored folder list;
 - generate dark-theme-visible fallback colors deterministically;
-- calculate the default manual black/white tab foreground from WCAG relative luminance whenever its book background changes;
+- default every manual Background tab foreground to white until the user explicitly switches that book to black;
 - never duplicate the color key;
 - use `FileManager.processFrontMatter()` for existing Markdown files;
 - never overwrite an existing config note;
@@ -99,7 +99,8 @@ Rules:
 
 - Book label is colored and subtle, not a heading in the note file.
 - All tabs may carry book color, but active tab must have a subtle brighter state.
-- Manual/frontmatter tab text color applies to every tab color style.
+- Manual/frontmatter tab text color applies only to the Background tab color style; other styles retain Obsidian's text color.
+- Manual foreground controls belong in the Background-style conditional settings, not the manual book-color rows.
 - Book mode keeps the dropdown-selected book as its first/primary tree. Other books with open files appear below in logical opening order; when the primary's final tab closes, the latest remaining book is promoted to primary.
 - Visible primary/temporary book bars may receive their corresponding book color.
 - Custom CSS must expose/use `--scope-tabs-book-color` and `data-scope-tabs-book` hooks.

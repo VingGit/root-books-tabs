@@ -32,9 +32,9 @@
 	box-shadow: none !important;
 }
 
-.workspace-tab-header.scope-tabs-color-tab .workspace-tab-header-inner-title,
-.workspace-tab-header.scope-tabs-color-tab .workspace-tab-header-inner-icon,
-.workspace-tab-header.scope-tabs-color-tab .workspace-tab-header-inner-close-button {
+.workspace-tab-header.scope-tabs-color-tab[data-scope-tabs-tab-style="background"] .workspace-tab-header-inner-title,
+.workspace-tab-header.scope-tabs-color-tab[data-scope-tabs-tab-style="background"] .workspace-tab-header-inner-icon,
+.workspace-tab-header.scope-tabs-color-tab[data-scope-tabs-tab-style="background"] .workspace-tab-header-inner-close-button {
 	color: var(--scope-tabs-tab-text-color) !important;
 }
 
