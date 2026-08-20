@@ -1,4 +1,4 @@
-import { App, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, type SliderComponent, type TextComponent } from 'obsidian';
+import { App, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, setIcon, type SettingDefinitionItem, type SliderComponent, type TextComponent } from 'obsidian';
 import { isHexColor, isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
@@ -9,9 +9,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	private frontmatterSection: HTMLElement | null = null;
 	private tabOptionsSection: HTMLElement | null = null;
 	private customCssSection: HTMLElement | null = null;
-	private backgroundTextSection: HTMLElement | null = null;
-	private manualBackgroundTextSection: HTMLElement | null = null;
-	private frontmatterBackgroundTextSection: HTMLElement | null = null;
+	private backgroundTextButton: HTMLElement | null = null;
 	private gridOverflowControl: HTMLElement | null = null;
 	private gridDimensionsSection: HTMLElement | null = null;
 
@@ -19,11 +17,23 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		super(app, scopeTabs);
 	}
 
-	display(): void {
-		const { containerEl } = this;
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [{
+			name: 'Root Books Tabs settings',
+			desc: 'Book mode, navigation, book colors, tab styles, creation locations, and maintenance.',
+			aliases: ['Grid', 'Background text', 'pop-out', 'new note', 'new folder'],
+			render: (setting) => {
+				setting.settingEl.empty();
+				setting.settingEl.addClass('scope-tabs-settings-root');
+				this.renderSettings(setting.settingEl);
+			},
+		}];
+	}
+
+	private renderSettings(containerEl: HTMLElement): void {
 		containerEl.empty();
 		containerEl.createEl('p', {
-			text: 'Each first-level folder is a book. Root Books Tabs provides a focused explorer and keeps each book in one managed tab group or pop-out.',
+			text: 'Each first-level folder is a book. Root books tabs provides a focused explorer and keeps each book in one managed tab group or pop-out.',
 		});
 		this.renderBookMode(containerEl);
 		this.renderNavigation(containerEl);
@@ -77,11 +87,11 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				}));
 		const bookPosition = new Setting(containerEl)
 			.setName('New book position')
-			.setDesc('Cardinal placement, a 2x2 clockwise spiral that then halves cells, or a configurable clockwise grid with per-cell overflow.')
+			.setDesc('Cardinal placement or a configurable clockwise grid with per-cell overflow.')
 			.addDropdown((dropdown) => {
 				dropdown.selectEl.addClass('scope-tabs-book-position-select');
 				dropdown
-					.addOptions({ right: 'Right', left: 'Left', down: 'Down', up: 'Up', spiral: 'Spiral', grid: 'Grid' })
+					.addOptions({ right: 'Right', left: 'Left', down: 'Down', up: 'Up', grid: 'Grid' })
 					.setValue(this.scopeTabs.settings.bookSplitDirection)
 					.onChange(async (value: string) => {
 					this.scopeTabs.settings.bookSplitDirection = value as typeof this.scopeTabs.settings.bookSplitDirection;
@@ -119,8 +129,8 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				await this.scopeTabs.saveSettings();
 			}));
 		new Setting(containerEl)
-			.setName('Open new books in external windows')
-			.setDesc('Use Obsidian desktop pop-out windows instead of splits when a book is first opened.')
+			.setName('Open new books in pop-outs')
+			.setDesc('Use an Obsidian desktop pop-out instead of a split when a book is first opened.')
 			.addToggle((toggle) => toggle.setValue(this.scopeTabs.settings.openBooksInExternalWindows).onChange(async (value: boolean) => {
 				this.scopeTabs.settings.openBooksInExternalWindows = value;
 				await this.scopeTabs.saveSettings();
@@ -196,7 +206,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	private renderManualColors(containerEl: HTMLElement): void {
 		containerEl.createEl('p', {
 			cls: 'setting-item-description',
-			text: 'First-level folders are detected automatically. These controls set the book color; Background-style text colors are configured under Decorations.',
+			text: 'First-level folders are detected automatically. These controls set the book color; background-style text colors are configured under decorations.',
 		});
 		for (const book of this.scopeTabs.scopeResolver.listBooks()) {
 			const row = new Setting(containerEl).setName(book.name);
@@ -206,7 +216,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			colorInput.value = color;
 			const hexInput = row.controlEl.createEl('input', { type: 'text', cls: 'scope-tabs-hex-input' });
 			hexInput.value = color;
-			hexInput.placeholder = '#RRGGBB';
+			hexInput.placeholder = '#123456';
 			const commit = async (value: string) => {
 				if (!isHexColor(value)) return;
 				const normalized = value.toLowerCase();
@@ -219,7 +229,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			colorInput.addEventListener('input', () => void commit(colorInput.value));
 			hexInput.addEventListener('change', () => {
 				if (!isHexColor(hexInput.value)) {
-					new Notice('Root Books Tabs colors must use #RRGGBB format.');
+					new Notice('Root books tabs colors must use #rrggbb format.');
 					hexInput.value = this.scopeTabs.settings.manualColors[book.id] ?? this.scopeTabs.colors.getColor(book);
 					return;
 				}
@@ -232,14 +242,14 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Book config note')
 			.setDesc('Markdown filename inside each first-level folder, without .md.')
-			.addText((text) => text.setValue(this.scopeTabs.settings.configFileBaseName).setPlaceholder('index').onChange(async (value: string) => {
+			.addText((text) => text.setValue(this.scopeTabs.settings.configFileBaseName).setPlaceholder('Index').onChange(async (value: string) => {
 				this.scopeTabs.settings.configFileBaseName = sanitizeConfigBaseName(value);
 				await this.scopeTabs.saveSettings();
 			}));
 		new Setting(containerEl)
 			.setName('Color frontmatter property')
-			.setDesc('The value must be #RRGGBB. Missing or invalid values are added automatically.')
-			.addText((text) => text.setValue(this.scopeTabs.settings.colorFrontmatterProperty).setPlaceholder('color').onChange(async (value: string) => {
+			.setDesc('The value must be #rrggbb. Missing or invalid values are added automatically.')
+			.addText((text) => text.setValue(this.scopeTabs.settings.colorFrontmatterProperty).setPlaceholder('Color').onChange(async (value: string) => {
 				this.scopeTabs.settings.colorFrontmatterProperty = sanitizeFrontmatterProperty(value);
 				await this.scopeTabs.saveSettings();
 			}));
@@ -273,7 +283,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				this.scopeTabs.decorations.refresh();
 			}));
 		this.tabOptionsSection = containerEl.createDiv({ cls: 'scope-tabs-conditional-section' });
-		new Setting(this.tabOptionsSection)
+		const tabStyle = new Setting(this.tabOptionsSection)
 			.setName('Tab color style')
 			.addDropdown((dropdown) => dropdown
 				.addOptions({ underline: 'Underline', background: 'Background', dot: 'Colored dot', custom: 'Custom CSS' })
@@ -284,21 +294,16 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 					await this.scopeTabs.saveSettings();
 					this.scopeTabs.decorations.refresh();
 				}));
-		this.backgroundTextSection = this.tabOptionsSection.createDiv({ cls: 'scope-tabs-conditional-section scope-tabs-background-text-section' });
-		new Setting(this.backgroundTextSection)
-			.setName('Background tab text')
-			.setDesc('These foreground controls apply only when Tab color style is Background. Other styles keep Obsidian’s normal tab text color.');
-		this.manualBackgroundTextSection = this.backgroundTextSection.createDiv({ cls: 'scope-tabs-conditional-section' });
-		this.renderManualBackgroundTextColors(this.manualBackgroundTextSection);
-		this.frontmatterBackgroundTextSection = this.backgroundTextSection.createDiv({ cls: 'scope-tabs-conditional-section' });
-		new Setting(this.frontmatterBackgroundTextSection)
-			.setName('Tab text frontmatter property')
-			.setDesc('Background-style tab text may be any CSS hex color, black, or white. Missing or invalid values resolve to white and are repaired when colors refresh.')
-			.addText((text) => text.setValue(this.scopeTabs.settings.tabTextFrontmatterProperty).setPlaceholder('tab-text-bg').onChange(async (value: string) => {
-				this.scopeTabs.settings.tabTextFrontmatterProperty = sanitizeTabTextFrontmatterProperty(value);
-				await this.scopeTabs.saveSettings();
-				this.scopeTabs.decorations.refresh();
-			}));
+		this.backgroundTextButton = tabStyle.controlEl.createEl('button', {
+			cls: 'clickable-icon scope-tabs-background-text-button',
+			attr: {
+				type: 'button',
+				'aria-label': 'Configure background tab text colors',
+				title: 'Background tab text colors',
+			},
+		});
+		setIcon(this.backgroundTextButton, 'contrast');
+		this.backgroundTextButton.addEventListener('click', () => new BackgroundTabTextModal(this.app, this.scopeTabs).open());
 		this.customCssSection = this.tabOptionsSection.createDiv({ cls: 'scope-tabs-conditional-section' });
 		new Setting(this.customCssSection)
 			.setName('Custom tab CSS')
@@ -306,47 +311,12 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			.addButton((button) => button.setButtonText('Open CSS editor').onClick(() => new CustomTabCssModal(this.app, this.scopeTabs).open()));
 	}
 
-	private renderManualBackgroundTextColors(containerEl: HTMLElement): void {
-		containerEl.createEl('p', {
-			cls: 'setting-item-description',
-			text: 'Manual Background text defaults to white. Use each dot to switch that book between white and black.',
-		});
-		for (const book of this.scopeTabs.scopeResolver.listBooks()) {
-			const row = new Setting(containerEl).setName(book.name);
-			const configured = this.scopeTabs.settings.manualTabTextColors[book.id];
-			let textColor: ManualTabTextColor = isManualTabTextColor(configured)
-				? configured
-				: '#ffffff';
-			const textToggle = row.controlEl.createEl('button', {
-				cls: 'scope-tabs-tab-text-toggle',
-				attr: { type: 'button' },
-			});
-			const dot = textToggle.createSpan({ cls: 'scope-tabs-tab-text-dot' });
-			const updateControl = () => {
-				const selectedName = textColor === '#000000' ? 'black' : 'white';
-				dot.style.background = textColor;
-				textToggle.setAttr('aria-label', `Background tab text is ${selectedName}. Click to use ${selectedName === 'black' ? 'white' : 'black'}.`);
-				textToggle.setAttr('title', `Background tab text: ${selectedName}`);
-			};
-			updateControl();
-			textToggle.addEventListener('click', () => {
-				textColor = textColor === '#000000' ? '#ffffff' : '#000000';
-				this.scopeTabs.settings.manualTabTextColors[book.id] = textColor;
-				updateControl();
-				void this.scopeTabs.saveSettings();
-				this.scopeTabs.decorations.refresh();
-			});
-		}
-	}
-
 	private updateConditionalSections(): void {
 		this.manualSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'manual');
 		this.frontmatterSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'frontmatter');
 		this.tabOptionsSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs);
 		this.customCssSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs || this.scopeTabs.settings.tabDecorationStyle !== 'custom');
-		this.backgroundTextSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs || this.scopeTabs.settings.tabDecorationStyle !== 'background');
-		this.manualBackgroundTextSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'manual');
-		this.frontmatterBackgroundTextSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'frontmatter');
+		this.backgroundTextButton?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs || this.scopeTabs.settings.tabDecorationStyle !== 'background');
 		const gridHidden = this.scopeTabs.settings.bookSplitDirection !== 'grid';
 		this.gridOverflowControl?.toggleClass('is-hidden', gridHidden);
 		this.gridDimensionsSection?.toggleClass('is-hidden', gridHidden);
@@ -356,13 +326,99 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName('Maintenance').setHeading();
 		new Setting(containerEl)
 			.setName('Reset settings')
-			.setDesc('Restore all Root Books Tabs settings to defaults. Runtime group ownership is retained.')
-			.addButton((button) => button.setWarning().setButtonText('Reset to defaults').onClick(async () => {
+			.setDesc('Restore all root books tabs settings to defaults. Runtime group ownership is retained.')
+			.addButton((button) => button.setDestructive().setButtonText('Reset to defaults').onClick(async () => {
 				this.scopeTabs.settings = structuredClone(DEFAULT_SETTINGS);
 				await this.scopeTabs.saveSettings();
 				await this.scopeTabs.refreshColorConfiguration(false);
-				this.display();
+				this.update();
 			}));
+	}
+}
+
+class BackgroundTabTextModal extends Modal {
+	private readonly manualDraft: Record<string, ManualTabTextColor>;
+	private propertyDraft: string;
+
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin) {
+		super(app);
+		this.manualDraft = { ...plugin.settings.manualTabTextColors };
+		this.propertyDraft = plugin.settings.tabTextFrontmatterProperty;
+	}
+
+	onOpen(): void {
+		this.modalEl.addClass('scope-tabs-background-text-modal');
+		this.contentEl.empty();
+		this.contentEl.createEl('h2', { text: 'Background tab text' });
+		this.contentEl.createEl('p', {
+			text: 'These colors apply only to background-style tabs. Other tab styles keep Obsidian’s normal text color.',
+		});
+		if (this.plugin.settings.colorMode === 'manual') this.renderManualChoices();
+		else this.renderFrontmatterProperty();
+
+		const buttons = this.contentEl.createDiv({ cls: 'scope-tabs-modal-buttons' });
+		buttons.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+		const apply = buttons.createEl('button', { text: 'Apply', cls: 'mod-cta' });
+		apply.addEventListener('click', () => void this.apply());
+	}
+
+	private renderManualChoices(): void {
+		this.contentEl.createEl('p', {
+			cls: 'setting-item-description',
+			text: 'White is the default. Each compact button switches one book between white and black.',
+		});
+		const grid = this.contentEl.createDiv({ cls: 'scope-tabs-background-text-grid' });
+		for (const book of this.plugin.scopeResolver.listBooks()) {
+			const configured = this.manualDraft[book.id];
+			let value: ManualTabTextColor = isManualTabTextColor(configured)
+				? configured
+				: '#ffffff';
+			const button = grid.createEl('button', {
+				cls: 'scope-tabs-background-text-choice',
+				attr: { type: 'button' },
+			});
+			button.createSpan({ cls: 'scope-tabs-background-text-book', text: book.name });
+			const valueEl = button.createSpan({ cls: 'scope-tabs-background-text-value' });
+			const dot = valueEl.createSpan({ cls: 'scope-tabs-tab-text-dot' });
+			const label = valueEl.createSpan();
+			const refresh = () => {
+				const name = value === '#000000' ? 'Black' : 'White';
+				dot.style.background = value;
+				label.setText(name);
+				button.setAttr('aria-label', `${book.name}: ${name} Background tab text. Click to switch.`);
+			};
+			refresh();
+			button.addEventListener('click', () => {
+				value = value === '#000000' ? '#ffffff' : '#000000';
+				this.manualDraft[book.id] = value;
+				refresh();
+			});
+		}
+	}
+
+	private renderFrontmatterProperty(): void {
+		new Setting(this.contentEl)
+			.setName('Tab text frontmatter property')
+			.setDesc('Accepts black, white, or any CSS hex color. Missing or invalid values resolve to white.')
+			.addText((text) => text
+				.setValue(this.propertyDraft)
+				.setPlaceholder('Tab-text-bg')
+				.onChange((value) => {
+					this.propertyDraft = value;
+				}));
+	}
+
+	private async apply(): Promise<void> {
+		if (this.plugin.settings.colorMode === 'manual') {
+			for (const book of this.plugin.scopeResolver.listBooks()) {
+				this.plugin.settings.manualTabTextColors[book.id] = this.manualDraft[book.id] ?? '#ffffff';
+			}
+		} else {
+			this.plugin.settings.tabTextFrontmatterProperty = sanitizeTabTextFrontmatterProperty(this.propertyDraft);
+		}
+		await this.plugin.saveSettings();
+		this.plugin.decorations.refresh();
+		this.close();
 	}
 }
 
@@ -460,7 +516,7 @@ export class MissingConfigModal extends Modal {
 
 	onOpen(): void {
 		this.contentEl.empty();
-		this.contentEl.createEl('h2', { text: 'Missing Root Books Tabs book config notes' });
+		this.contentEl.createEl('h2', { text: 'Missing root books tabs book config notes' });
 		if (this.books.length === 0) {
 			this.contentEl.createEl('p', { text: 'Every first-level folder already contains the configured book note.' });
 			return;

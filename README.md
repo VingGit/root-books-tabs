@@ -6,7 +6,7 @@ In the spirit of root-index-panels, **every first-level folder in the vault is t
 
 If a vault does not contain at least two first-level folders, Root Books Tabs does nothing to navigation.
 
-> **Status:** `0.1.0` is the first development build. The routing core uses Obsidian workspace APIs; a few visual compatibility features necessarily touch Obsidian's DOM or tab-group internals and are isolated so they can be repaired without changing the scope/navigation model.
+> **Status:** `0.1.1` is the current development build. The routing core uses Obsidian workspace APIs; a few visual compatibility features necessarily touch Obsidian's DOM or tab-group internals and are isolated so they can be repaired without changing the scope/navigation model.
 
 ## Core model
 
@@ -49,11 +49,10 @@ A new book can be opened:
 - left;
 - above;
 - below;
-- in a clockwise **Spiral** that fills a 2x2 base and then revisits those four cells clockwise, halving each one inward;
 - in a configurable **Grid** from 2–16 rows and 2–16 columns, which fills its base cells clockwise and then revisits them clockwise, splitting each one in the configured overflow direction;
 - in an external Obsidian pop-out window.
 
-Spiral begins at the top left, then fills top right, bottom right, and bottom left. Later books split those stable cells in the matching right, down, left, and up directions. Grid exposes row and column sliders plus exact number inputs; both default to 2 and accept 2–16. Once the configured rectangle is full, each return to the top-left starts another overflow circuit. The **Overflow** selector stays to the left of the main position selector and chooses whether later Grid books are placed right, down, left, or up from their base cells.
+Grid exposes row and column sliders plus exact number inputs; both default to 2 and accept 2–16. It fills the configured rectangle clockwise. Once that rectangle is full, later books revisit its stable base cells clockwise and split each base cell in the selected overflow direction. The **Overflow** selector stays to the left of the main position selector.
 
 Root Books Tabs keeps **one canonical managed tab group per book**, located either in the main workspace or a pop-out. If the requested file is already open there, its existing tab is focused; otherwise a new tab is added.
 
@@ -264,7 +263,7 @@ manifest.json
 styles.css
 ```
 
-The included GitHub Actions release workflow builds them when a version tag is pushed and creates a draft GitHub release.
+After every successful build matrix on `main`, GitHub Actions validates the version metadata and automatically creates an exact, unprefixed version tag and public release. Repeated runs compare immutable release assets and require a version bump if the build has changed.
 
 ## License
 

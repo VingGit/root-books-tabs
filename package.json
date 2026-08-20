@@ -1,6 +1,6 @@
 {
 	"name": "root-books-tabs",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Focused first-level book explorer and tab/window navigation for Obsidian.",
 	"main": "main.js",
 	"type": "module",

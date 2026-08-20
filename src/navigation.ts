@@ -6,7 +6,6 @@ import {
 	type OpenViewState,
 	type ViewState,
 	type Workspace,
-	type WorkspaceSplit,
 } from 'obsidian';
 import { getLeafFile } from './leaf-file';
 import type ScopeTabsPlugin from './main';
@@ -24,8 +23,6 @@ interface GroupTransferPlacement {
 	referenceLeaf: WorkspaceLeaf;
 	direction: CardinalDirection;
 }
-
-const SPIRAL_OVERFLOW_DIRECTIONS: CardinalDirection[] = ['right', 'down', 'left', 'up'];
 
 interface GridCoordinate {
 	row: number;
@@ -92,11 +89,19 @@ export class BookNavigationController {
 	getBookGroupInstances(book: BookScope): WorkspaceLeaf[] {
 		const instances: WorkspaceLeaf[] = [];
 		for (const [group, leaves] of this.collectGroups()) {
-			const representative = this.plugin.app.workspace.getMostRecentLeaf(group) ?? leaves[0];
-			if (!representative || this.getBookForGroup(representative)?.id !== book.id) continue;
+			const bookLeaves = leaves.filter((leaf) =>
+				this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault))?.id === book.id);
+			const recent = this.plugin.app.workspace.getMostRecentLeaf(group);
+			const representative = recent && bookLeaves.includes(recent) ? recent : bookLeaves[0];
+			if (!representative) continue;
 			instances.push(representative);
 		}
 		return instances;
+	}
+
+	getLatestBookGroupInstance(book: BookScope): WorkspaceLeaf | null {
+		const instances = this.getBookGroupInstances(book);
+		return instances[instances.length - 1] ?? null;
 	}
 
 	getGroupLocation(leaf: WorkspaceLeaf): ManagedGroupLocation {
@@ -198,7 +203,25 @@ export class BookNavigationController {
 			this.closeBook(book);
 			return;
 		}
-		for (const leaf of instances) this.closeBookGroup(leaf);
+		for (const leaf of instances) this.closeBookGroupInstance(book, leaf);
+	}
+
+	closeLatestBookGroup(book: BookScope): void {
+		const latest = this.getLatestBookGroupInstance(book);
+		if (latest) this.closeBookGroupInstance(book, latest);
+		else this.closeBook(book);
+	}
+
+	closeBookGroupInstance(book: BookScope, leaf: WorkspaceLeaf): void {
+		const leaves = this.getGroupLeaves(leaf);
+		const bookLeaves = leaves.filter((candidate) =>
+			this.plugin.scopeResolver.resolveFile(getLeafFile(candidate, this.plugin.app.vault))?.id === book.id);
+		if (bookLeaves.length === 0) return;
+		if (bookLeaves.length === leaves.length) {
+			this.closeBookGroup(leaf);
+			return;
+		}
+		for (const child of bookLeaves) this.closeBookTab(child);
 	}
 
 	closeBookGroup(leaf: WorkspaceLeaf): void {
@@ -208,6 +231,21 @@ export class BookNavigationController {
 		const leaves = this.getGroupLeaves(leaf);
 		this.forgetGroup(group);
 		for (const child of leaves) child.detach();
+	}
+
+	closeBookTab(leaf: WorkspaceLeaf): void {
+		const group = leaf.parent;
+		const leaves = this.getLeavesForGroup(group);
+		if (!leaves.includes(leaf)) return;
+		const closesGroup = leaves.length === 1;
+		const popout = getPopoutRoot(leaf);
+		if (closesGroup && popout && this.groupRecords.get(group)?.kind === 'managed') {
+			this.suppressedWindowReturns.add(popout);
+		}
+		if (closesGroup) this.forgetGroup(group);
+		leaf.detach();
+		if (!closesGroup) this.capturePopoutSnapshots();
+		this.syncBookOrder();
 	}
 
 	handleWindowClose(workspaceWindow: WorkspaceWindow): void {
@@ -525,7 +563,7 @@ export class BookNavigationController {
 				this.forgetGroup(createdLeaf.parent);
 				createdLeaf.detach();
 			}
-			new Notice('Root Books Tabs could not create the requested book window. The current book was left unchanged.');
+			new Notice('Root books tabs could not create the requested book window. The current book was left unchanged.');
 			return false;
 		} finally {
 			this.routing = false;
@@ -606,21 +644,28 @@ export class BookNavigationController {
 		if (this.plugin.settings.bookSplitDirection === 'grid') {
 			return this.createGridBookLeaf(mainReference);
 		}
-		if (this.plugin.settings.bookSplitDirection === 'spiral') {
-			return this.createSpiralBookLeaf(mainReference);
-		}
-		const cardinalDirection = this.plugin.settings.bookSplitDirection;
+		const configuredDirection = this.plugin.settings.bookSplitDirection;
+		const cardinalDirection: CardinalDirection = configuredDirection === 'left'
+			|| configuredDirection === 'right'
+			|| configuredDirection === 'up'
+			|| configuredDirection === 'down'
+			? configuredDirection
+			: 'right';
 		const direction = this.resolveSplitDirection(cardinalDirection);
 		return this.plugin.app.workspace.createLeafBySplit(mainReference, direction.axis, direction.before);
 	}
 
 	private createBookLeafAt(reference: WorkspaceLeaf, direction: CardinalDirection, forceNested = false): WorkspaceLeaf {
 		const split = this.resolveSplitDirection(direction);
-		if (forceNested) {
-			const nested = createNestedSplitLeaf(this.plugin.app.workspace, reference, split.axis, split.before);
-			if (nested) return nested;
+		const rollbackNestedWrapper = forceNested
+			? wrapTabGroupForNestedSplit(this.plugin.app.workspace, reference, split.axis)
+			: null;
+		try {
+			return this.plugin.app.workspace.createLeafBySplit(reference, split.axis, split.before);
+		} catch (error) {
+			rollbackNestedWrapper?.();
+			throw error;
 		}
-		return this.plugin.app.workspace.createLeafBySplit(reference, split.axis, split.before);
 	}
 
 	private createGridBookLeaf(fallback: WorkspaceLeaf): WorkspaceLeaf {
@@ -640,20 +685,6 @@ export class BookNavigationController {
 		return this.createBookLeafAt(reference, this.plugin.settings.gridOverflowDirection, true);
 	}
 
-	private createSpiralBookLeaf(fallback: WorkspaceLeaf): WorkspaceLeaf {
-		const orderedMainLeaves = this.getOrderedMainBookLeaves();
-		const capacity = 4;
-		if (orderedMainLeaves.length < capacity) {
-			return this.createClockwiseGridBaseLeaf(orderedMainLeaves, fallback, getClockwiseGridCreationSteps(2, 2), capacity);
-		}
-		const baseLeaves = this.syncGridBaseLeaves(orderedMainLeaves, capacity);
-		const overflowStep = orderedMainLeaves.length - capacity;
-		const baseIndex = overflowStep % capacity;
-		const reference = baseLeaves[baseIndex] ?? orderedMainLeaves[0] ?? fallback;
-		const direction = SPIRAL_OVERFLOW_DIRECTIONS[baseIndex] ?? 'right';
-		return this.createBookLeafAt(reference, direction, true);
-	}
-
 	private createClockwiseGridBaseLeaf(
 		orderedMainLeaves: WorkspaceLeaf[],
 		fallback: WorkspaceLeaf,
@@ -662,8 +693,9 @@ export class BookNavigationController {
 	): WorkspaceLeaf {
 		const baseLeaves = this.syncGridBaseLeaves(orderedMainLeaves, capacity);
 		const step = steps[orderedMainLeaves.length - 1];
-		if (!step) return this.createBookLeafAt(orderedMainLeaves.at(-1) ?? fallback, 'right');
-		const reference = baseLeaves[step.referenceIndex] ?? orderedMainLeaves.at(-1) ?? fallback;
+		const latestLeaf = orderedMainLeaves[orderedMainLeaves.length - 1] ?? fallback;
+		if (!step) return this.createBookLeafAt(latestLeaf, 'right');
+		const reference = baseLeaves[step.referenceIndex] ?? latestLeaf;
 		return this.createBookLeafAt(reference, step.direction);
 	}
 
@@ -944,7 +976,7 @@ export class BookNavigationController {
 			console.error('Root Books Tabs could not restore a closed pop-out book.', error);
 			for (const leaf of created) leaf.detach();
 			this.forgetCreatedGroup(created[0]);
-			new Notice('Root Books Tabs could not return the closed pop-out book to the main workspace.');
+			new Notice('Root books tabs could not return the closed pop-out book to the main workspace.');
 		} finally {
 			this.routing = false;
 		}
@@ -1095,20 +1127,20 @@ interface MutableTabGroupCompatibility {
 
 /**
  * Obsidian flattens a same-axis `createLeafBySplit` into the surrounding split.
- * Grid and Spiral overflow must halve only a base cell, so this optional adapter wraps that
- * tab group in a fresh nested split first. The public split operation remains the fallback.
+ * Grid overflow must halve only a base cell, so this optional adapter wraps that tab group
+ * in a fresh nested split before the public split operation creates the new tab group.
  */
-function createNestedSplitLeaf(
+function wrapTabGroupForNestedSplit(
 	workspace: Workspace,
 	reference: WorkspaceLeaf,
 	direction: 'vertical' | 'horizontal',
-	before: boolean,
-): WorkspaceLeaf | null {
+): (() => void) | null {
 	const group: unknown = reference.parent;
 	if (!isUnknownRecord(group)) return null;
 	const parent = group.parent;
 	if (!isUnknownRecord(parent) || !Array.isArray(parent.children)) return null;
-	const index = parent.children.indexOf(group);
+	const parentChildren: unknown[] = parent.children;
+	const index = parentChildren.indexOf(group);
 	const replaceChild = parent.replaceChild;
 	const SplitConstructor = parent.constructor;
 	if (index < 0 || typeof replaceChild !== 'function' || typeof SplitConstructor !== 'function') return null;
@@ -1124,23 +1156,23 @@ function createNestedSplitLeaf(
 	const groupDimension = group.dimension;
 	const setGroupDimension = group.setDimension;
 	const setNestedDimension = nested.setDimension;
-	let replaced = false;
 	try {
 		if (typeof setGroupDimension === 'function') Reflect.apply(setGroupDimension, group, [null]);
 		Reflect.apply(replaceChild, parent, [index, nested]);
-		replaced = true;
 		if (typeof setNestedDimension === 'function') Reflect.apply(setNestedDimension, nested, [groupDimension ?? null]);
 		Reflect.apply(nested.insertChild, nested, [0, group]);
-		return workspace.createLeafInParent(nested as unknown as WorkspaceSplit, before ? 0 : 1);
+		return () => {
+			const nestedIndex = parentChildren.indexOf(nested);
+			if (nestedIndex >= 0) Reflect.apply(replaceChild, parent, [nestedIndex, group]);
+			if (typeof setGroupDimension === 'function') Reflect.apply(setGroupDimension, group, [groupDimension ?? null]);
+		};
 	} catch {
-		if (replaced) {
-			try {
-				const nestedIndex = parent.children.indexOf(nested);
-				if (nestedIndex >= 0) Reflect.apply(replaceChild, parent, [nestedIndex, group]);
-				if (typeof setGroupDimension === 'function') Reflect.apply(setGroupDimension, group, [groupDimension ?? null]);
-			} catch {
-				// The public split fallback below remains available when compatibility rollback is incomplete.
-			}
+		try {
+			const nestedIndex = parentChildren.indexOf(nested);
+			if (nestedIndex >= 0) Reflect.apply(replaceChild, parent, [nestedIndex, group]);
+			if (typeof setGroupDimension === 'function') Reflect.apply(setGroupDimension, group, [groupDimension ?? null]);
+		} catch {
+			// The public split fallback remains available when compatibility rollback is incomplete.
 		}
 		return null;
 	}

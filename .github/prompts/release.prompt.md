@@ -7,7 +7,7 @@ argument-hint: Enter the release version, for example 0.1.1
 
 Prepare Root Books Tabs release `${input:version:0.1.1}`.
 
-Read [AGENTS.md](../../AGENTS.md), [manifest.json](../../manifest.json), [versions.json](../../versions.json), [package.json](../../package.json), [package-lock.json](../../package-lock.json), and [release workflow](../workflows/release.yml).
+Read [AGENTS.md](../../AGENTS.md), [manifest.json](../../manifest.json), [versions.json](../../versions.json), [package.json](../../package.json), [package-lock.json](../../package-lock.json), and the automatic release job in the [build workflow](../workflows/lint.yml).
 
 Checklist:
 
@@ -18,5 +18,5 @@ Checklist:
 5. Run `npm ci`, `npm run build`, and `npm run lint`.
 6. Confirm `main.js`, `manifest.json`, and `styles.css` exist for release.
 7. Summarize user-visible changes for release notes.
-8. Use a Git tag exactly equal to the version with no leading `v`.
-9. Do not commit generated `main.js`; attach it to a public GitHub release via the workflow.
+8. Let the successful `main` build create a Git tag exactly equal to the version with no leading `v`.
+9. Do not commit generated `main.js`; the automatic release job attaches it to a public GitHub release.

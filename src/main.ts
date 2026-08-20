@@ -38,7 +38,7 @@ export default class ScopeTabsPlugin extends Plugin {
 			name: 'Refresh book colors and decorations',
 			callback: async () => {
 				await this.refreshColorConfiguration(false);
-				new Notice('Root Books Tabs refreshed book colors and decorations.');
+				new Notice('Root books tabs refreshed book colors and decorations.');
 			},
 		});
 
@@ -84,7 +84,7 @@ export default class ScopeTabsPlugin extends Plugin {
 
 	openMissingConfigManager(): void {
 		if (!this.scopeResolver.hasMultipleBooks()) {
-			new Notice('Root Books Tabs is inactive because this vault has fewer than two first-level folders.');
+			new Notice('Root books tabs is inactive because this vault has fewer than two first-level folders.');
 			return;
 		}
 		const books = this.scopeResolver.listBooks();

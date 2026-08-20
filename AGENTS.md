@@ -69,9 +69,8 @@ When changing it:
 - if the destination leaf differs from the active/source leaf, assume Obsidian/user explicitly chose it and respect it;
 - do not interfere with unscoped root files;
 - keep one managed tab group per book unless the user explicitly creates another destination.
-- Spiral placement fills a clockwise 2x2 base, then cycles over those four stable base books and halves them right/down/left/up.
 - Grid placement fills a configurable 2–16 by 2–16 rectangle clockwise. Later books cycle over the stable base books and split each base in the configured right/down/left/up overflow direction.
-- Grid and Spiral overflow must halve only the target base cell. A small feature-detected nested-`WorkspaceSplit` adapter may prevent Obsidian from flattening same-axis overflow into the surrounding row/column; public `createLeafBySplit` is the safe fallback.
+- Grid overflow must halve only the target base cell. A small feature-detected nested-`WorkspaceSplit` adapter prevents Obsidian from flattening same-axis overflow into the surrounding row/column before delegating leaf creation to public `createLeafBySplit`.
 
 ## Color/config rules
 

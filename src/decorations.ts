@@ -28,11 +28,13 @@ export class DecorationController {
 	private explorerDecorations = new Map<HTMLElement, ExplorerDecoration>();
 	private explorerRefreshQueued = false;
 	private explorerRefreshFrame: number | null = null;
+	private tabDecorationRefreshFrame: number | null = null;
 	private primaryPromotionTimer: number | null = null;
 	private previousOpenBookIds = new Set<string>();
 	private instancePickerMenu: Menu | null = null;
 	private instancePickerBookId: string | null = null;
 	private closeTargetEl: HTMLElement | null = null;
+	private restoreClosePreviewWindow: (() => void) | null = null;
 	private bookDragDocuments = new Map<Document, () => void>();
 	private bookGroupDrag: BookGroupDrag | null = null;
 	private bookDropTargetEl: HTMLElement | null = null;
@@ -50,12 +52,15 @@ export class DecorationController {
 		this.refreshLeavesAndTabs();
 		this.refreshExplorer();
 		this.refreshBookMenus();
+		this.queueTabDecorationRefresh();
 	}
 
 	cleanup(): void {
 		if (this.explorerRefreshFrame !== null) window.cancelAnimationFrame(this.explorerRefreshFrame);
+		if (this.tabDecorationRefreshFrame !== null) window.cancelAnimationFrame(this.tabDecorationRefreshFrame);
 		if (this.primaryPromotionTimer !== null) window.clearTimeout(this.primaryPromotionTimer);
 		this.explorerRefreshFrame = null;
+		this.tabDecorationRefreshFrame = null;
 		this.primaryPromotionTimer = null;
 		this.explorerRefreshQueued = false;
 		this.previousOpenBookIds.clear();
@@ -129,6 +134,20 @@ export class DecorationController {
 		});
 	}
 
+	/**
+	 * A tab close can emit layout-change before Obsidian has reconciled the tab-header DOM with
+	 * the group's child array. Repeating just the DOM-sensitive passes on the next frame keeps the
+	 * surviving leftmost tab decorated without creating a refresh loop.
+	 */
+	private queueTabDecorationRefresh(): void {
+		if (this.tabDecorationRefreshFrame !== null) window.cancelAnimationFrame(this.tabDecorationRefreshFrame);
+		this.tabDecorationRefreshFrame = window.requestAnimationFrame(() => {
+			this.tabDecorationRefreshFrame = null;
+			this.refreshLeavesAndTabs();
+			this.refreshBookMenus();
+		});
+	}
+
 	private decorateLeaf(leaf: WorkspaceLeaf, book: BookScope, color: string): void {
 		leaf.view.containerEl.setAttr('data-scope-tabs-book', book.id);
 		leaf.view.containerEl.style.setProperty('--scope-tabs-book-color', color);
@@ -141,12 +160,7 @@ export class DecorationController {
 	}
 
 	private decorateTabHeader(leaf: WorkspaceLeaf, book: BookScope, color: string): void {
-		const group = getInternalTabGroupDom(leaf);
-		if (!group) return;
-		const index = group.children.indexOf(leaf);
-		if (index < 0) return;
-		const headers = group.containerEl.querySelectorAll<HTMLElement>('.workspace-tab-header-container-inner > .workspace-tab-header');
-		const header = headers.item(index);
+		const header = getTabHeaderForLeaf(leaf);
 		if (!header) return;
 		header.setAttr('data-scope-tabs-book', book.id);
 		header.style.setProperty('--scope-tabs-book-color', color);
@@ -389,7 +403,7 @@ export class DecorationController {
 				: 'All scoped tabs are already sorted into their books.');
 		} catch (error) {
 			console.error('Root Books Tabs could not sort tabs into books.', error);
-			new Notice('Root Books Tabs could not finish sorting the tabs. Existing tabs were preserved where possible.');
+			new Notice('Root books tabs could not finish sorting the tabs. Existing tabs were preserved where possible.');
 		} finally {
 			this.sortingTabs = false;
 			this.refresh();
@@ -399,12 +413,7 @@ export class DecorationController {
 	private async animateTabSort(leaves: WorkspaceLeaf[]): Promise<void> {
 		const headers = new Set<HTMLElement>();
 		for (const leaf of leaves) {
-			const group = getInternalTabGroupDom(leaf);
-			if (!group) continue;
-			const index = group.children.indexOf(leaf);
-			const header = index >= 0
-				? group.containerEl.querySelectorAll<HTMLElement>('.workspace-tab-header-container-inner > .workspace-tab-header').item(index)
-				: null;
+			const header = getTabHeaderForLeaf(leaf);
 			if (header && header.ownerDocument.defaultView?.matchMedia('(prefers-reduced-motion: reduce)').matches !== true) headers.add(header);
 		}
 		if (headers.size === 0) return;
@@ -441,7 +450,7 @@ export class DecorationController {
 		if (!decoration) {
 			const toggle = actions.createEl('button', {
 				cls: 'clickable-icon scope-tabs-book-mode-toggle',
-				attr: { 'aria-label': 'Toggle Root Books Tabs book mode', type: 'button' },
+				attr: { 'aria-label': 'Toggle root books tabs book mode', type: 'button' },
 			});
 			setIcon(toggle, 'book-open-check');
 			toggle.addEventListener('click', () => this.toggleBookMode());
@@ -545,64 +554,76 @@ export class DecorationController {
 					this.plugin.navigation.closeAllBookGroups(currentBook);
 					return;
 				}
-				if (event.shiftKey) return;
-				this.plugin.navigation.closeBook(currentBook);
-			});
-			const showInstancePicker = (event: MouseEvent) => {
-				if (!event.shiftKey) {
-					bar?.removeClass('scope-tabs-instance-picker-ready');
+				if (event.shiftKey) {
+					this.showBookInstancePicker(event, currentBook);
 					return;
 				}
-				const id = bar?.dataset.bookId;
-				const currentBook = this.plugin.scopeResolver.listBooks().find((candidate) => candidate.id === id);
-				bar?.toggleClass('scope-tabs-instance-picker-ready', currentBook ? this.showBookInstancePicker(event, currentBook) : false);
-			};
-			bar.addEventListener('mouseenter', showInstancePicker);
-			bar.addEventListener('mousemove', showInstancePicker);
-			bar.addEventListener('mouseleave', () => bar?.removeClass('scope-tabs-instance-picker-ready'));
+				this.plugin.navigation.closeLatestBookGroup(currentBook);
+			});
 		}
 		bar.dataset.bookId = book.id;
 		let title = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-title');
 		let close = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-close');
-		let choose = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-choose');
 		if (!title) title = bar.createSpan({ cls: 'scope-tabs-book-subtree-title' });
 		if (!close) {
 			close = bar.createSpan({ cls: 'scope-tabs-book-subtree-close' });
-			close.createSpan({ cls: 'scope-tabs-book-subtree-close-label', text: 'Close book' });
-			close.createSpan({ cls: 'scope-tabs-book-subtree-close-hint', text: 'Shift: choose window · Ctrl+click: close all' });
+			close.createSpan({ cls: 'scope-tabs-book-subtree-close-label', text: 'Close latest book' });
+			close.createSpan({ cls: 'scope-tabs-book-subtree-close-hint', text: 'Shift+click: choose instance or tab · Ctrl+click: close all' });
 		}
-		if (!choose) choose = bar.createSpan({ cls: 'scope-tabs-book-subtree-choose' });
 		if (title.textContent !== book.name) title.setText(book.name);
-		if (choose.textContent !== 'Choose book window') choose.setText('Choose book window');
-		bar.setAttr('aria-label', `Close book ${book.name}. Hold Shift to choose a book window. Ctrl-click to close all book windows.`);
+		bar.setAttr('aria-label', `Close the latest ${book.name} book. Shift-click to choose an instance or tab. Ctrl-click to close every instance and tab for this book.`);
 		bar.toggleClass('scope-tabs-book-switcher-colored', this.plugin.settings.colorBookSwitcher);
 		bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
 	}
 
 	private showBookInstancePicker(event: MouseEvent, book: BookScope): boolean {
 		const instances = this.plugin.navigation.getBookGroupInstances(book);
-		if (instances.length < 2) return false;
+		if (instances.length === 0) return false;
 		if (this.instancePickerBookId === book.id) return true;
 		this.instancePickerMenu?.hide();
 		const menu = new Menu();
 		this.instancePickerMenu = menu;
 		this.instancePickerBookId = book.id;
+		menu.addItem((item) => item.setTitle(book.name).setIcon('book-open').setIsLabel(true));
 		instances.forEach((leaf, index) => {
-			const activeLeaf = this.plugin.app.workspace.getMostRecentLeaf(leaf.parent) ?? leaf;
-			const file = getLeafFile(activeLeaf, this.plugin.app.vault);
+			const file = getLeafFile(leaf, this.plugin.app.vault);
 			const location = this.plugin.navigation.getGroupLocation(leaf);
 			const title = createFragment();
 			const label = title.createSpan({
-				cls: 'scope-tabs-book-instance-option',
+				cls: 'scope-tabs-book-instance-option scope-tabs-book-instance-heading',
 				text: `${location === 'popout' ? 'Pop-out' : 'Main workspace'} ${index + 1}${file ? ` — ${file.basename}` : ''}`,
 			});
-			label.addEventListener('mouseenter', () => this.setCloseTarget(leaf));
+			label.addEventListener('mouseenter', () => this.setCloseTarget(leaf, 'group'));
 			label.addEventListener('mouseleave', () => this.clearCloseTarget());
 			menu.addItem((item) => item
 				.setTitle(title)
 				.setIcon(location === 'popout' ? 'picture-in-picture-2' : 'panels-top-left')
 				.setWarning(true)
-				.onClick(() => this.plugin.navigation.closeBookGroup(leaf)));
+				.onClick(() => {
+					this.clearCloseTarget();
+					this.plugin.navigation.closeBookGroupInstance(book, leaf);
+				}));
+
+			for (const child of getInternalTabGroupDom(leaf)?.children ?? [leaf]) {
+				const childFile = getLeafFile(child, this.plugin.app.vault);
+				if (!childFile || this.plugin.scopeResolver.resolveFile(childFile)?.id !== book.id) continue;
+				const tabTitle = createFragment();
+				const tabLabel = tabTitle.createSpan({
+					cls: 'scope-tabs-book-instance-option scope-tabs-book-instance-tab',
+					text: childFile.basename,
+				});
+				tabLabel.addEventListener('mouseenter', () => this.setCloseTarget(child, 'tab'));
+				tabLabel.addEventListener('mouseleave', () => this.clearCloseTarget());
+				menu.addItem((item) => item
+					.setTitle(tabTitle)
+					.setIcon('file')
+					.setWarning(true)
+					.onClick(() => {
+						this.clearCloseTarget();
+						this.plugin.navigation.closeBookTab(child);
+					}));
+			}
+			if (index < instances.length - 1) menu.addSeparator();
 		});
 		menu.onHide(() => {
 			if (this.instancePickerMenu === menu) {
@@ -615,18 +636,23 @@ export class DecorationController {
 		return true;
 	}
 
-	private setCloseTarget(leaf: WorkspaceLeaf): void {
+	private setCloseTarget(leaf: WorkspaceLeaf, targetKind: 'group' | 'tab'): void {
 		this.clearCloseTarget();
 		const group = getInternalTabGroupDom(leaf);
-		const target = group?.containerEl ?? leaf.view.containerEl.closest<HTMLElement>('.workspace-tabs');
+		const target = targetKind === 'tab'
+			? getTabHeaderForLeaf(leaf)
+			: group?.containerEl ?? leaf.view.containerEl.closest<HTMLElement>('.workspace-tabs');
 		if (!target) return;
 		target.addClass('scope-tabs-close-target');
 		this.closeTargetEl = target;
+		this.restoreClosePreviewWindow = bringPopoutForwardForClosePreview(leaf);
 	}
 
 	private clearCloseTarget(): void {
 		this.closeTargetEl?.removeClass('scope-tabs-close-target');
 		this.closeTargetEl = null;
+		this.restoreClosePreviewWindow?.();
+		this.restoreClosePreviewWindow = null;
 	}
 
 	private showBookSwitcher(event: MouseEvent): void {
@@ -792,6 +818,32 @@ function getInternalTabGroupDom(leaf: WorkspaceLeaf): InternalTabGroupDom | null
 	return { identity: leaf.parent, children, containerEl };
 }
 
+/**
+ * Resolve the header against the live children rather than trusting a briefly stale child index
+ * during tab closure. New Obsidian builds may expose the header directly; that feature-detected
+ * path is preferred, while the group/header order remains the compatibility fallback.
+ */
+function getTabHeaderForLeaf(leaf: WorkspaceLeaf): HTMLElement | null {
+	const leafRecord: unknown = leaf;
+	if (isUnknownRecord(leafRecord)) {
+		for (const key of ['tabHeaderEl', 'tabHeader']) {
+			const candidate = leafRecord[key];
+			if (isHtmlElement(candidate, leaf.view.containerEl.ownerDocument) && candidate.hasClass('workspace-tab-header')) return candidate;
+		}
+	}
+	const group = getInternalTabGroupDom(leaf);
+	if (!group) return null;
+	const liveChildren = group.children.filter((candidate) => {
+		if (!candidate.view.containerEl.isConnected) return false;
+		return candidate.view.containerEl.closest<HTMLElement>('.workspace-tabs') === group.containerEl;
+	});
+	const index = liveChildren.indexOf(leaf);
+	if (index < 0) return null;
+	return group.containerEl
+		.querySelectorAll<HTMLElement>('.workspace-tab-header-container-inner > .workspace-tab-header')
+		.item(index);
+}
+
 function getTabHeaderHost(leaf: WorkspaceLeaf, group: InternalTabGroupDom | null): HTMLElement | null {
 	const selector = '.workspace-tab-header-container-inner';
 	const groupHost = group?.containerEl.querySelector<HTMLElement>(selector);
@@ -848,5 +900,56 @@ function getAlwaysOnTopCompatibility(leaf: WorkspaceLeaf): AlwaysOnTopCompatibil
 				// Always-on-top is optional and should never affect book routing.
 			}
 		},
+	};
+}
+
+/**
+ * Temporarily lift a pop-out without activating one of its leaves. Electron's inactive-show and
+ * always-on-top methods are desktop-only implementation details, so every method is detected and
+ * failure simply leaves the preview in its current stacking position.
+ */
+function bringPopoutForwardForClosePreview(leaf: WorkspaceLeaf): (() => void) | null {
+	if (leaf.view.containerEl.ownerDocument === document) return null;
+	const root = leaf.getRoot();
+	if (!isUnknownRecord(root)) return null;
+	const rootWindow = root.win;
+	const browserWindow = isUnknownRecord(rootWindow) ? rootWindow.electronWindow : undefined;
+	if (!isUnknownRecord(browserWindow)) return null;
+	const showInactive = browserWindow.showInactive;
+	const moveTop = browserWindow.moveTop;
+	const isAlwaysOnTop = browserWindow.isAlwaysOnTop;
+	const setAlwaysOnTop = browserWindow.setAlwaysOnTop;
+	const BrowserWindowConstructor = browserWindow.constructor;
+	const getFocusedWindow: unknown = typeof BrowserWindowConstructor === 'function'
+		? Reflect.get(BrowserWindowConstructor, 'getFocusedWindow') as unknown
+		: undefined;
+	let previousFrontWindow: unknown;
+	let wasPinned = false;
+	try {
+		if (typeof getFocusedWindow === 'function') {
+			previousFrontWindow = Reflect.apply(getFocusedWindow, BrowserWindowConstructor, []);
+		}
+		if (typeof isAlwaysOnTop === 'function') wasPinned = Reflect.apply(isAlwaysOnTop, browserWindow, []) === true;
+		if (typeof showInactive === 'function') Reflect.apply(showInactive, browserWindow, []);
+		if (typeof moveTop === 'function') Reflect.apply(moveTop, browserWindow, []);
+		if (!wasPinned && typeof setAlwaysOnTop === 'function') Reflect.apply(setAlwaysOnTop, browserWindow, [true]);
+	} catch {
+		// The red DOM preview remains useful even if Electron window stacking is unavailable.
+	}
+	let restored = false;
+	return () => {
+		if (restored) return;
+		restored = true;
+		try {
+			if (!wasPinned && typeof setAlwaysOnTop === 'function') {
+				Reflect.apply(setAlwaysOnTop, browserWindow, [false]);
+			}
+			if (isUnknownRecord(previousFrontWindow) && previousFrontWindow !== browserWindow) {
+				const restoreTop = previousFrontWindow.moveTop;
+				if (typeof restoreTop === 'function') Reflect.apply(restoreTop, previousFrontWindow, []);
+			}
+		} catch {
+			// Window stacking is optional and must never block closing a tab or book.
+		}
 	};
 }

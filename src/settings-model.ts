@@ -60,7 +60,7 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	else if (typeof source.colorExplorer === 'boolean') settings.colorBookSwitcher = source.colorExplorer;
 	if (source.newNoteLocation === 'current-folder' || source.newNoteLocation === 'book-root') settings.newNoteLocation = source.newNoteLocation;
 	if (source.newFolderLocation === 'current-folder' || source.newFolderLocation === 'book-root') settings.newFolderLocation = source.newFolderLocation;
-	if (source.bookSplitDirection === 'right' || source.bookSplitDirection === 'left' || source.bookSplitDirection === 'down' || source.bookSplitDirection === 'up' || source.bookSplitDirection === 'spiral' || source.bookSplitDirection === 'grid') {
+	if (source.bookSplitDirection === 'right' || source.bookSplitDirection === 'left' || source.bookSplitDirection === 'down' || source.bookSplitDirection === 'up' || source.bookSplitDirection === 'grid') {
 		settings.bookSplitDirection = source.bookSplitDirection;
 	} else if (source.bookSplitDirection === 'grid-4x4') {
 		settings.bookSplitDirection = 'grid';

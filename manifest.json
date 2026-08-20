@@ -1,8 +1,8 @@
 {
 	"id": "scope-tabs",
 	"name": "Root Books Tabs",
-	"version": "0.1.0",
-	"minAppVersion": "1.6.0",
+	"version": "0.1.1",
+	"minAppVersion": "1.13.0",
 	"description": "Focus first-level-folder books and manage their tabs, groups, colors, and pop-out windows.",
 	"author": "VingGit",
 	"authorUrl": "https://github.com/VingGit",

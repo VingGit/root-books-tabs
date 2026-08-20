@@ -1,6 +1,6 @@
 export type ColorMode = 'manual' | 'frontmatter';
 export type CardinalDirection = 'right' | 'left' | 'down' | 'up';
-export type BookSplitDirection = CardinalDirection | 'spiral' | 'grid';
+export type BookSplitDirection = CardinalDirection | 'grid';
 export type TabInsertDirection = 'right' | 'left';
 export type TabDecorationStyle = 'underline' | 'background' | 'dot' | 'custom';
 export type CreationLocation = 'current-folder' | 'book-root';

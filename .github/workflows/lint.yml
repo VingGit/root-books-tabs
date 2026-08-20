@@ -25,3 +25,110 @@ jobs:
             - run: npm ci
             - run: npm run build --if-present
             - run: npm run lint
+
+    release:
+        name: Release exact manifest version
+        needs: build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        concurrency:
+            group: release-main
+            cancel-in-progress: false
+        permissions:
+            contents: write
+            id-token: write
+            attestations: write
+
+        steps:
+            - uses: actions/checkout@v6
+              with:
+                  fetch-depth: 0
+
+            - name: Use Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24.x
+                  cache: 'npm'
+
+            - name: Build release assets
+              run: |
+                  npm ci
+                  npm run build
+                  npm run lint
+
+            - name: Validate release metadata
+              id: metadata
+              shell: bash
+              run: |
+                  version="$(node -p "require('./manifest.json').version")"
+                  package_version="$(node -p "require('./package.json').version")"
+                  lock_version="$(node -p "require('./package-lock.json').version")"
+                  min_app_version="$(node -p "require('./manifest.json').minAppVersion")"
+
+                  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "manifest version must be x.y.z without a leading v" >&2
+                    exit 1
+                  fi
+                  if [[ "$version" != "$package_version" || "$version" != "$lock_version" ]]; then
+                    echo "manifest.json, package.json, and package-lock.json versions must match" >&2
+                    exit 1
+                  fi
+                  versions_min_app="$(node -p "require('./versions.json')['$version']")"
+                  if [[ "$versions_min_app" != "$min_app_version" ]]; then
+                    echo "versions.json must map $version to $min_app_version" >&2
+                    exit 1
+                  fi
+                  test -f main.js
+                  test -f manifest.json
+                  test -f styles.css
+                  echo "version=$version" >> "$GITHUB_OUTPUT"
+
+            - name: Check immutable release state
+              id: release_state
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  VERSION: ${{ steps.metadata.outputs.version }}
+              shell: bash
+              run: |
+                  if release_state="$(gh release view "$VERSION" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | @tsv' 2>/dev/null)"; then
+                    mkdir release-assets
+                    gh release download "$VERSION" --dir release-assets --pattern main.js --pattern manifest.json --pattern styles.css
+                    if ! cmp --silent main.js release-assets/main.js \
+                      || ! cmp --silent manifest.json release-assets/manifest.json \
+                      || ! cmp --silent styles.css release-assets/styles.css; then
+                      echo "Release $VERSION exists with different assets; bump the plugin version." >&2
+                      exit 1
+                    fi
+                    if [[ "$release_state" != $'false\tfalse' ]]; then
+                      gh release edit "$VERSION" --draft=false --prerelease=false
+                    fi
+                    echo "create=false" >> "$GITHUB_OUTPUT"
+                    echo "Release $VERSION already contains these exact assets."
+                  elif git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+                    echo "Tag $VERSION exists without a matching public release; refusing to overwrite it." >&2
+                    exit 1
+                  else
+                    echo "create=true" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Attest release assets
+              if: steps.release_state.outputs.create == 'true'
+              uses: actions/attest@v4
+              with:
+                  subject-path: |
+                      main.js
+                      manifest.json
+                      styles.css
+
+            - name: Create public release
+              if: steps.release_state.outputs.create == 'true'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  VERSION: ${{ steps.metadata.outputs.version }}
+                  HEAD_SHA: ${{ github.sha }}
+              run: |
+                  gh release create "$VERSION" \
+                    --target "$HEAD_SHA" \
+                    --title "$VERSION" \
+                    --generate-notes \
+                    main.js manifest.json styles.css

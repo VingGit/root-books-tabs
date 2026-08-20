@@ -46,7 +46,7 @@ Responsibilities:
 - reuse an already-open destination file, or create a new tab for a new same-book destination;
 - reuse a managed destination-book tab group when one exists;
 - create a split/pop-out group when a new book is encountered;
-- place main-workspace books in cardinal, 2x2-and-halving Spiral, or configurable clockwise Grid/overflow layouts;
+- place main-workspace books in cardinal or configurable clockwise Grid/overflow layouts;
 - preserve manually created destination leaves and free groups/windows;
 - adopt Obsidian's forced empty leaf before creating a split;
 - preserve a persisted logical book order with the selected primary first, append new/returning groups at the configured expansion end, and promote the latest remaining book when the primary closes;
@@ -123,7 +123,7 @@ Some requested presentation operations do not have a complete public API. Curren
 - interpreting drag/drop on that pseudo-tab as a view-state-preserving whole-group transfer with feature-detected workspace group DOM targets;
 - the optional desktop `window.electronWindow` adapter used only for pop-out always-on-top pinning;
 - reordering a newly created tab to the left by feature-detecting tab-group child operations.
-- wrapping a Grid or Spiral overflow base cell in a nested split so overflow halves that cell instead of flattening into its surrounding row/column; the adapter mirrors the feature-detected `WorkspaceSplit` operations in the locally installed Obsidian build and falls back to the public split API.
+- wrapping a Grid overflow base cell in a nested split so overflow halves that cell instead of flattening into its surrounding row/column; the adapter mirrors the feature-detected `WorkspaceSplit` operations in the locally installed Obsidian build and then delegates creation to public `createLeafBySplit`.
 
 Book pop-out transfer copies public view states so non-Markdown tabs are preserved when possible. The original group is detached only after every replacement tab has been created successfully.
 
@@ -158,7 +158,7 @@ At minimum test:
 - single-folder inert vault;
 - three books with same-book and cross-book links;
 - root-level files after navigating away from a decorated book note;
-- right/left/up/down group creation, the clockwise 2x2-and-halving Spiral, and 2–16-row/column Grid base/overflow placement in every overflow direction;
+- right/left/up/down group creation and 2–16-row/column Grid base/overflow placement in every overflow direction;
 - existing destination file/tab and destination-book reuse;
 - external managed books and manual free pop-outs;
 - empty-leaf adoption and selected-book-root creation with no open files;
