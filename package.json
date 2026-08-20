@@ -1,7 +1,7 @@
 {
-	"name": "scope-tabs",
+	"name": "root-books-tabs",
 	"version": "0.1.0",
-	"description": "Scope-aware tab and book-window navigation for Obsidian.",
+	"description": "Focused first-level book explorer and tab/window navigation for Obsidian.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

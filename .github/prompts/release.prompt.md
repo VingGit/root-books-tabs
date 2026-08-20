@@ -1,11 +1,11 @@
 ---
 name: release
-description: Prepare and verify a Scope Tabs Obsidian release
+description: Prepare and verify a Root Books Tabs Obsidian release
 agent: agent
 argument-hint: Enter the release version, for example 0.1.1
 ---
 
-Prepare Scope Tabs release `${input:version:0.1.1}`.
+Prepare Root Books Tabs release `${input:version:0.1.1}`.
 
 Read [AGENTS.md](../../AGENTS.md), [manifest.json](../../manifest.json), [versions.json](../../versions.json), [package.json](../../package.json), [package-lock.json](../../package-lock.json), and [release workflow](../workflows/release.yml).
 

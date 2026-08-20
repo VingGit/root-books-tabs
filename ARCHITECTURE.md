@@ -1,8 +1,8 @@
-# Scope Tabs architecture
+# Root Books Tabs architecture
 
 ## Design goal
 
-Scope Tabs treats each first-level vault folder as a separate **book** and keeps navigation context grouped by that scope. The first release deliberately fixes scope depth at one while keeping scope resolution replaceable.
+Root Books Tabs treats each first-level vault folder as a separate **book** and keeps navigation context grouped by that scope. The first release deliberately fixes scope depth at one while keeping scope resolution replaceable.
 
 The plugin is organized as a pipeline:
 
@@ -43,11 +43,18 @@ Owns navigation policy and workspace placement.
 Responsibilities:
 
 - preserve Obsidian behavior for unscoped files and single-folder vaults;
-- create a new tab for same-book navigation;
+- reuse an already-open destination file, or create a new tab for a new same-book destination;
 - reuse a managed destination-book tab group when one exists;
 - create a split/pop-out group when a new book is encountered;
-- preserve manually created destination leaves and free pop-out windows;
-- close, pop out, restore, and minimize managed book groups;
+- place main-workspace books in cardinal, 2x2-and-halving Spiral, or configurable clockwise Grid/overflow layouts;
+- preserve manually created destination leaves and free groups/windows;
+- adopt Obsidian's forced empty leaf before creating a split;
+- preserve a persisted logical book order with the selected primary first, append new/returning groups at the configured expansion end, and promote the latest remaining book when the primary closes;
+- close and transfer managed book groups between the main workspace and pop-outs;
+- accept edge-aware whole-group drag placements from the decoration controller while preserving all view states and managed/free ownership;
+- explicitly regroup mixed and separated scoped tabs by book while preserving view states and active focus;
+- cache managed pop-out view states so native window closure can return them to the main workspace;
+- restore versioned managed/free group ownership from feature-detected group IDs;
 - restore the original `WorkspaceLeaf.openFile` implementation on plugin unload.
 
 The controller patches `WorkspaceLeaf.prototype.openFile` because reacting only after `file-open` is too late to preserve the source tab. The original method is retained exactly and plugin-generated routing calls that saved method behind a re-entry guard.
@@ -56,7 +63,7 @@ The controller patches `WorkspaceLeaf.prototype.openFile` because reacting only 
 
 Owns book color resolution and per-book Markdown config metadata.
 
-Manual mode stores colors in plugin settings. Frontmatter mode reads the configured note/property. Existing config notes are edited with `FileManager.processFrontMatter()` and missing notes are created only after explicit user action.
+Manual mode stores book backgrounds plus a black/white tab foreground in plugin settings. The automatic manual foreground is selected by comparing WCAG relative-luminance contrast against black and white whenever the background changes, without displaying a recommendation. Frontmatter mode reads independently configured background and tab-text properties; the text value accepts `black`, `white`, or any CSS hex color and falls back to white. The foreground applies to every tab style. Existing config notes are edited with `FileManager.processFrontMatter()` and missing notes are created only after explicit user action.
 
 ### `src/decorations.ts`
 
@@ -66,16 +73,19 @@ This includes:
 
 - the small book label above Markdown note content;
 - tab decoration;
-- active-book file-explorer decoration;
-- book-group controls;
-- minimized-group presentation;
+- integrated book-mode filtering, action toggle, and book switcher;
+- the book-icon pseudo-tab, its group menu, long-press regroup action, and the cross-window group-drag/drop adapter;
 - injected user CSS.
 
 DOM selectors and internal tab-group structure assumptions must stay here (or in a dedicated compatibility module if this file is split later). A selector failure should degrade decoration, not core routing.
 
 ### `src/settings.ts`
 
-Owns the settings UI and missing-config modal. It should call service/controller methods rather than reproducing their logic.
+Owns the stable settings UI, custom-tab-CSS preview modal, and missing-config modal. Conditional sections are mounted once so ordinary changes do not reset settings scroll position.
+
+### `src/leaf-file.ts` and `src/new-note.ts`
+
+`leaf-file.ts` resolves a `TFile` from any file-backed leaf, using public `FileView.file` first and view-state fallback for deferred/resource views. `new-note.ts` ownership-safely wraps the app's public `FileManager.getNewFileParent()` instance method. It also feature-detects the internal `createNewFolder(null)` toolbar path because Obsidian exposes no public folder-parent hook. Both wrappers restore only when Root Books Tabs still owns them.
 
 ### `src/main.ts`
 
@@ -83,11 +93,13 @@ Owns plugin lifecycle, registrations, persisted settings loading/saving, and cro
 
 ## Managed groups versus free windows
 
-Scope Tabs distinguishes managed book groups from explicit user navigation destinations.
+Root Books Tabs distinguishes managed book groups from explicit user navigation destinations.
 
-A managed group is expected to contain notes from one book. Cross-book routing tries to keep one managed group per book.
+A managed group contains pages/resources from one book. Cross-book routing keeps one canonical managed group per book, either in the main workspace or a pop-out.
 
-If Obsidian/the user explicitly supplies another destination leaf, Scope Tabs does not redirect that operation. A manually created external pop-out is therefore a **free window**: subsequent navigation from that window stays in tabs in the same window, even when first-level folders differ.
+If Obsidian/the user explicitly supplies another destination leaf, Root Books Tabs does not redirect that operation. The destination group is a **free exception**: subsequent navigation stays in that group even when first-level folders differ.
+
+A homogeneous free group still receives book controls. Transfers preserve whether the source was canonical-managed or free, so moving a duplicate instance cannot steal canonical ownership. Pop-out detection combines the workspace root type with the leaf document because Obsidian windows may cross JavaScript realms.
 
 ## Public API and compatibility boundary
 
@@ -97,7 +109,8 @@ Prefer documented Obsidian workspace primitives for routing:
 - `Workspace.getLeaf('tab')`
 - `Workspace.createLeafBySplit`
 - `Workspace.openPopoutLeaf`
-- `Workspace.revealLeaf`
+- `Workspace.setActiveLeaf`
+- `WorkspaceLeaf.getViewState` / `WorkspaceLeaf.setViewState`
 - `WorkspaceLeaf.getRoot`
 - `FileManager.processFrontMatter`
 - `Plugin.loadData()` / `Plugin.saveData()`
@@ -105,29 +118,35 @@ Prefer documented Obsidian workspace primitives for routing:
 Some requested presentation operations do not have a complete public API. Current compatibility-sensitive areas are:
 
 - mapping a `WorkspaceLeaf` to its tab-header DOM element;
-- file-explorer root-folder DOM decoration;
+- file-explorer root-item filtering, expansion, and action-bar/book-bar injection;
+- inserting a decoration-only book pseudo-tab before real tab headers;
+- interpreting drag/drop on that pseudo-tab as a view-state-preserving whole-group transfer with feature-detected workspace group DOM targets;
+- the optional desktop `window.electronWindow` adapter used only for pop-out always-on-top pinning;
 - reordering a newly created tab to the left by feature-detecting tab-group child operations.
+- wrapping a Grid or Spiral overflow base cell in a nested split so overflow halves that cell instead of flattening into its surrounding row/column; the adapter mirrors the feature-detected `WorkspaceSplit` operations in the locally installed Obsidian build and falls back to the public split API.
+
+Book pop-out transfer copies public view states so non-Markdown tabs are preserved when possible. The original group is detached only after every replacement tab has been created successfully.
 
 Keep those paths optional and feature-detected. A future Obsidian DOM change should not prevent note navigation.
 
 ## Single-folder invariant
 
-Before routing, decoration, notification, or config-frontmatter maintenance, check that the vault currently contains at least two first-level folders. With zero or one book, Scope Tabs is intentionally inert.
+Before routing, decoration, notification, or config-frontmatter maintenance, check that the vault currently contains at least two first-level folders. With zero or one book, Root Books Tabs is intentionally inert.
 
 ## Persistence
 
 Plugin settings use Obsidian's normal `loadData`/`saveData` storage under the plugin directory in `.obsidian`.
 
-Runtime group bookkeeping is intentionally ephemeral. Book identity comes from the files in a group rather than a persisted custom workspace schema. If persistent cross-restart group identity is added later, it should be versioned separately from ordinary user settings.
+Runtime group ownership, logical book order, and up to 256 stable Grid base-book IDs are stored under `runtimeStateV1`, separately from the additive flat settings migration. Legacy 4x4 fields migrate into the generic Grid fields. Feature-detected Obsidian group IDs recover managed pop-outs and explicit free groups after restart; routing still works when an ID is unavailable.
 
 ## Unload
 
 Unload must be safe and idempotent:
 
 1. restore the exact saved `WorkspaceLeaf.prototype.openFile` implementation;
-2. remove injected style elements;
-3. remove plugin-created labels and book controls;
-4. clear plugin data attributes/CSS variables;
+2. restore the app-instance note-parent and optional folder-creation methods only when Root Books Tabs still owns each patch;
+3. disconnect explorer observers and remove injected toggles, bars, labels, pseudo-tabs, and styles;
+4. restore hidden explorer items and clear plugin classes, data attributes, and CSS variables;
 5. leave user tabs, notes, and workspace layout intact.
 
 Never treat ordinary plugin unload as an uninstall event.
@@ -138,14 +157,23 @@ At minimum test:
 
 - single-folder inert vault;
 - three books with same-book and cross-book links;
-- right/left/up/down/spiral group creation;
-- existing destination-book reuse;
+- root-level files after navigating away from a decorated book note;
+- right/left/up/down group creation, the clockwise 2x2-and-halving Spiral, and 2–16-row/column Grid base/overflow placement in every overflow direction;
+- existing destination file/tab and destination-book reuse;
 - external managed books and manual free pop-outs;
+- empty-leaf adoption and selected-book-root creation with no open files;
+- toolbar folder creation in current-folder/book-root modes;
 - left/right new-tab insertion and focus toggle;
-- close/pop-out/minimize controls;
-- manual and frontmatter colors;
+- close/pop-out transfer controls, whole-pop-out pinning, pseudo-tab group dragging within/between main and pop-out windows, and menu/long-press tab regrouping;
+- pop-out focus, pin/unpin, native-close return, and intentional-close suppression;
+- pop-out transfer of mixed Markdown and non-Markdown tabs;
+- manual and frontmatter colors, automatic/manual foreground selection without recommendation text, all-style foreground application, and custom frontmatter tab-text colors;
 - missing config creation for selected/all books;
 - duplicate-frontmatter prevention;
-- tab/explorer custom CSS;
+- resource routing/color for PNG, SVG, PDF, Canvas, and Bases;
+- book-mode primary-tree persistence plus temporary open-book subtrees and full cleanup;
+- missing-index entry fallback, latest-secondary promotion, selected-first order, and narrow explorer hover wrapping;
+- duplicate homogeneous group controls, Shift-hover instance selection/dimming, Ctrl-click close-all, and cross-realm pop-out detection;
+- custom tab CSS modal at narrow and wide sizes;
 - disable/re-enable teardown;
 - restart with a pre-existing workspace layout.

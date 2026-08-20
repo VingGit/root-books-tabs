@@ -1,9 +1,10 @@
 import { Notice, TFile, normalizePath } from 'obsidian';
 import type ScopeTabsPlugin from './main';
-import type { BookScope } from './types';
-import { sanitizeConfigBaseName, sanitizeFrontmatterProperty } from './settings-model';
+import type { BookScope, ManualTabTextColor } from './types';
+import { sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
 
 const HEX = /^#[0-9a-f]{6}$/i;
+const CSS_HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 export class BookColorService {
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
@@ -13,6 +14,11 @@ export class BookColorService {
 		for (const book of books) {
 			if (!isHexColor(this.plugin.settings.manualColors[book.id])) {
 				this.plugin.settings.manualColors[book.id] = randomDarkThemeColor(book.id);
+				changed = true;
+			}
+			const background = this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
+			if (!isManualTabTextColor(this.plugin.settings.manualTabTextColors[book.id])) {
+				this.plugin.settings.manualTabTextColors[book.id] = getAutomaticTabTextColor(background);
 				changed = true;
 			}
 		}
@@ -27,6 +33,16 @@ export class BookColorService {
 		return this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
 	}
 
+	getTabTextColor(book: BookScope): string {
+		if (this.plugin.settings.colorMode === 'frontmatter') {
+			return this.readFrontmatterTabTextColor(book) ?? '#ffffff';
+		}
+		const configured = this.plugin.settings.manualTabTextColors[book.id];
+		return isManualTabTextColor(configured)
+			? configured
+			: getAutomaticTabTextColor(this.getColor(book));
+	}
+
 	getConfigPath(book: BookScope): string {
 		const base = sanitizeConfigBaseName(this.plugin.settings.configFileBaseName);
 		return normalizePath(`${book.folderPath}/${base}.md`);
@@ -38,50 +54,96 @@ export class BookColorService {
 
 	async ensureFrontmatterColors(books: BookScope[]): Promise<void> {
 		await this.ensureManualColors(books);
-		const property = sanitizeFrontmatterProperty(this.plugin.settings.colorFrontmatterProperty);
+		const colorProperty = sanitizeFrontmatterProperty(this.plugin.settings.colorFrontmatterProperty);
+		const textProperty = sanitizeTabTextFrontmatterProperty(this.plugin.settings.tabTextFrontmatterProperty);
 		for (const book of books) {
 			const file = this.plugin.app.vault.getAbstractFileByPath(this.getConfigPath(book));
 			if (!(file instanceof TFile)) continue;
-			await this.plugin.app.fileManager.processFrontMatter(file, (frontmatter) => {
-				const current = frontmatter[property];
+			await this.plugin.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+				const current = frontmatter[colorProperty];
 				if (!isHexColor(typeof current === 'string' ? current : '')) {
-					frontmatter[property] = this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
+					frontmatter[colorProperty] = this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
 				}
+				if (!normalizeTabTextColor(frontmatter[textProperty])) frontmatter[textProperty] = 'white';
 			});
 		}
 	}
 
 	async createConfigFiles(books: BookScope[]): Promise<void> {
 		await this.ensureManualColors(books);
-		const property = sanitizeFrontmatterProperty(this.plugin.settings.colorFrontmatterProperty);
+		const colorProperty = sanitizeFrontmatterProperty(this.plugin.settings.colorFrontmatterProperty);
+		const textProperty = sanitizeTabTextFrontmatterProperty(this.plugin.settings.tabTextFrontmatterProperty);
 		for (const book of books) {
 			const path = this.getConfigPath(book);
 			const existing = this.plugin.app.vault.getAbstractFileByPath(path);
 			if (existing instanceof TFile) {
-				await this.plugin.app.fileManager.processFrontMatter(existing, (frontmatter) => {
-					if (!isHexColor(typeof frontmatter[property] === 'string' ? frontmatter[property] : '')) {
-						frontmatter[property] = this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
+				await this.plugin.app.fileManager.processFrontMatter(existing, (frontmatter: Record<string, unknown>) => {
+					const current = frontmatter[colorProperty];
+					if (!isHexColor(typeof current === 'string' ? current : '')) {
+						frontmatter[colorProperty] = this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
 					}
+					if (!normalizeTabTextColor(frontmatter[textProperty])) frontmatter[textProperty] = 'white';
 				});
 				continue;
 			}
 			const color = this.plugin.settings.manualColors[book.id] ?? randomDarkThemeColor(book.id);
-			await this.plugin.app.vault.create(path, `---\n${property}: "${color}"\n---\n`);
+			await this.plugin.app.vault.create(path, `---\n${JSON.stringify(colorProperty)}: ${JSON.stringify(color)}\n${JSON.stringify(textProperty)}: white\n---\n`);
 		}
-		new Notice(`Scope Tabs: created/updated ${books.length} book config file${books.length === 1 ? '' : 's'}.`);
+		new Notice(`Root Books Tabs: created/updated ${books.length} book config file${books.length === 1 ? '' : 's'}.`);
 	}
 
 	private readFrontmatterColor(book: BookScope): string | null {
 		const file = this.plugin.app.vault.getAbstractFileByPath(this.getConfigPath(book));
 		if (!(file instanceof TFile)) return null;
 		const property = sanitizeFrontmatterProperty(this.plugin.settings.colorFrontmatterProperty);
-		const value = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter?.[property];
+		const frontmatter: unknown = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
+		const value = getRecordValue(frontmatter, property);
 		return typeof value === 'string' && isHexColor(value) ? value : null;
+	}
+
+	private readFrontmatterTabTextColor(book: BookScope): string | null {
+		const file = this.plugin.app.vault.getAbstractFileByPath(this.getConfigPath(book));
+		if (!(file instanceof TFile)) return null;
+		const property = sanitizeTabTextFrontmatterProperty(this.plugin.settings.tabTextFrontmatterProperty);
+		const frontmatter: unknown = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
+		return normalizeTabTextColor(getRecordValue(frontmatter, property));
 	}
 }
 
 export function isHexColor(value: string | undefined): value is string {
 	return typeof value === 'string' && HEX.test(value);
+}
+
+export function normalizeTabTextColor(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === 'black') return '#000000';
+	if (normalized === 'white') return '#ffffff';
+	return CSS_HEX.test(normalized) ? normalized : null;
+}
+
+export function isManualTabTextColor(value: string | undefined): value is ManualTabTextColor {
+	return value === '#000000' || value === '#ffffff';
+}
+
+export function getAutomaticTabTextColor(background: string): ManualTabTextColor {
+	if (!isHexColor(background)) return '#ffffff';
+	const luminance = getRelativeLuminance(background);
+	const blackContrast = (luminance + 0.05) / 0.05;
+	const whiteContrast = 1.05 / (luminance + 0.05);
+	return blackContrast >= whiteContrast ? '#000000' : '#ffffff';
+}
+
+function getRelativeLuminance(color: string): number {
+	const channels = [color.slice(1, 3), color.slice(3, 5), color.slice(5, 7)]
+		.map((channel) => Number.parseInt(channel, 16) / 255)
+		.map((channel) => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+	return 0.2126 * (channels[0] ?? 0) + 0.7152 * (channels[1] ?? 0) + 0.0722 * (channels[2] ?? 0);
+}
+
+function getRecordValue(value: unknown, key: string): unknown {
+	if (typeof value !== 'object' || value === null) return undefined;
+	return (value as Record<string, unknown>)[key];
 }
 
 function randomDarkThemeColor(seed: string): string {

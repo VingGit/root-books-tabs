@@ -1,9 +1,9 @@
 {
 	"id": "scope-tabs",
-	"name": "Scope Tabs",
+	"name": "Root Books Tabs",
 	"version": "0.1.0",
 	"minAppVersion": "1.6.0",
-	"description": "Treat first-level folders as books and route Obsidian tabs, panes, colors, and pop-out windows by book scope.",
+	"description": "Focus first-level-folder books and manage their tabs, groups, colors, and pop-out windows.",
 	"author": "VingGit",
 	"authorUrl": "https://github.com/VingGit",
 	"isDesktopOnly": true
