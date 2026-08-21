@@ -198,16 +198,17 @@ export class DecorationController {
 		this.syncBookDragDocuments();
 		this.clearBookButtonLongPresses();
 		for (const doc of this.getWorkspaceDocuments()) doc.querySelectorAll('.scope-tabs-book-menu-tab').forEach((el) => el.remove());
-		const seen = new Set<object>();
+		const seenHosts = new Set<HTMLElement>();
 		this.plugin.app.workspace.iterateAllLeaves((leaf) => {
 			const group = getInternalTabGroupDom(leaf);
-			const identity = group?.identity ?? leaf.parent;
-			if (seen.has(identity)) return;
-			seen.add(identity);
+			const host = getTabHeaderHost(leaf, group);
+			if (!host || seenHosts.has(host)) return;
+			seenHosts.add(host);
+			// Pop-out transitions can expose several transient group identities for one live tab host.
+			// The DOM host is the invariant: keep exactly one pseudo-tab control attached to it.
+			host.querySelectorAll(':scope > .scope-tabs-book-menu-tab').forEach((el) => el.remove());
 			const book = this.plugin.navigation.getBookForGroup(leaf);
 			if (!book) return;
-			const host = getTabHeaderHost(leaf, group);
-			if (!host) return;
 			const button = host.createEl('button', {
 				cls: 'scope-tabs-book-menu-tab clickable-icon',
 				attr: {
