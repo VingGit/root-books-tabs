@@ -1,0 +1,30 @@
+name: One-time plugin version bump
+
+on:
+    push:
+        branches: [main]
+        paths:
+            - '.github/workflows/one-time-version-bump.yml'
+
+permissions:
+    contents: write
+
+jobs:
+    bump:
+        if: github.actor != 'github-actions[bot]'
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v6
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: 24.x
+            - name: Bump plugin version
+              run: npm version patch --no-git-tag-version
+            - name: Commit version bump and remove helper workflow
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git rm .github/workflows/one-time-version-bump.yml
+                  git add -- manifest.json package.json package-lock.json versions.json
+                  git commit -m "Bump plugin version to 0.1.2"
+                  git push origin HEAD:main
