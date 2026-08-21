@@ -13,9 +13,28 @@ interface InternalTabGroupDom {
 
 interface ExplorerDecoration {
 	observer: MutationObserver;
+	actions: HTMLElement;
+	files: HTMLElement;
+	filesParent: HTMLElement;
+	modelReady: boolean;
 	toggle: HTMLElement;
 	bar: HTMLElement;
 	openAnother: HTMLElement;
+}
+
+interface ExplorerTreeItemAdapter {
+	identity: object;
+	el: HTMLElement;
+	path: string;
+	expand: () => void;
+}
+
+interface ExplorerTreeAdapter {
+	rootItems: ExplorerTreeItemAdapter[];
+	itemsByPath: Map<string, ExplorerTreeItemAdapter>;
+	reorder: (paths: string[]) => void;
+	restoreOrder: () => void;
+	invalidate: () => void;
 }
 
 interface BookGroupDrag {
@@ -73,8 +92,7 @@ export class DecorationController {
 		for (const removeListeners of this.bookDragDocuments.values()) removeListeners();
 		this.bookDragDocuments.clear();
 		const docs = new Set<Document>([...this.getWorkspaceDocuments(), ...this.customStyleSheets.keys()]);
-		for (const decoration of this.explorerDecorations.values()) decoration.observer.disconnect();
-		this.explorerDecorations.clear();
+		for (const [root, decoration] of [...this.explorerDecorations]) this.disposeExplorerDecoration(root, decoration, true);
 		for (const [doc, sheet] of this.customStyleSheets) {
 			doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter((candidate) => candidate !== sheet);
 		}
@@ -434,19 +452,41 @@ export class DecorationController {
 		}
 		for (const [root, decoration] of this.explorerDecorations) {
 			if (root.isConnected && explorerRoots.has(root)) continue;
-			decoration.observer.disconnect();
-			decoration.toggle.remove();
-			decoration.bar.remove();
-			decoration.openAnother.remove();
-			this.explorerDecorations.delete(root);
+			this.disposeExplorerDecoration(root, decoration, true);
 		}
+	}
+
+	private disposeExplorerDecoration(root: HTMLElement, decoration: ExplorerDecoration, restoreOrder: boolean): void {
+		decoration.observer.disconnect();
+		const tree = getExplorerTreeAdapter(this.plugin, root);
+		const itemEls = new Set<HTMLElement>(tree?.rootItems.map((item) => item.el) ?? []);
+		root.querySelectorAll<HTMLElement>('.scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary').forEach((item) => itemEls.add(item));
+		for (const item of itemEls) {
+			item.style.removeProperty('order');
+			item.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary']);
+			item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.removeClass('scope-tabs-book-root-title-hidden');
+			item.querySelector(':scope > .scope-tabs-book-subtree-bar')?.remove();
+		}
+		root.querySelectorAll('.scope-tabs-book-subtree-bar').forEach((bar) => bar.remove());
+		if (restoreOrder) tree?.restoreOrder();
+		tree?.invalidate();
+		decoration.toggle.remove();
+		decoration.bar.remove();
+		decoration.openAnother.remove();
+		root.removeClass('scope-tabs-book-mode');
+		this.explorerDecorations.delete(root);
 	}
 
 	private ensureExplorerDecoration(root: HTMLElement): void {
 		let decoration = this.explorerDecorations.get(root);
 		const actions = root.querySelector<HTMLElement>('.nav-buttons-container');
 		const files = root.querySelector<HTMLElement>('.nav-files-container');
-		if (!actions || !files) return;
+		const filesParent = files?.parentElement;
+		if (!actions || !files || !filesParent) return;
+		if (decoration && (decoration.actions !== actions || decoration.files !== files || decoration.filesParent !== filesParent)) {
+			this.disposeExplorerDecoration(root, decoration, true);
+			decoration = undefined;
+		}
 		if (!decoration) {
 			const toggle = actions.createEl('button', {
 				cls: 'clickable-icon scope-tabs-book-mode-toggle',
@@ -458,22 +498,33 @@ export class DecorationController {
 				cls: 'scope-tabs-book-switcher',
 				attr: { type: 'button', 'aria-haspopup': 'menu' },
 			});
-			files.parentElement?.insertBefore(bar, files);
+			filesParent.insertBefore(bar, files);
 			bar.addEventListener('click', (event: MouseEvent) => this.showBookSwitcher(event));
-			const openAnother = files.createEl('button', {
+			const openAnother = filesParent.createEl('button', {
 				cls: 'scope-tabs-open-book-button',
 				attr: { type: 'button', 'aria-haspopup': 'menu', 'aria-label': 'Open another book' },
 			});
+			filesParent.insertBefore(openAnother, files);
 			openAnother.createSpan({ cls: 'scope-tabs-open-book-default', text: '+ Open another book' });
 			openAnother.createSpan({ cls: 'scope-tabs-open-book-hover', text: 'Shift-click opens another book in a pop-out window instead.' });
 			openAnother.addEventListener('click', (event: MouseEvent) => {
 				event.stopPropagation();
 				this.showOpenAnotherMenu(event, event.shiftKey);
 			});
-			const observer = new MutationObserver(() => this.queueExplorerRefresh());
-			observer.observe(files, { childList: true, subtree: true });
-			decoration = { observer, toggle, bar, openAnother };
+			const observer = new MutationObserver(() => {
+				const current = this.explorerDecorations.get(root);
+				if (!current) return;
+				const liveActions = root.querySelector<HTMLElement>('.nav-buttons-container');
+				const liveFiles = root.querySelector<HTMLElement>('.nav-files-container');
+				if (liveActions !== current.actions || liveFiles !== current.files || !current.modelReady) this.queueExplorerRefresh();
+			});
+			observer.observe(root, { childList: true });
+			decoration = { observer, actions, files, filesParent, modelReady: false, toggle, bar, openAnother };
 			this.explorerDecorations.set(root, decoration);
+			window.setTimeout(() => {
+				const current = this.explorerDecorations.get(root);
+				if (current && !current.modelReady) this.queueExplorerRefresh();
+			}, 100);
 		}
 		decoration.toggle.toggleClass('is-active', this.plugin.settings.bookModeEnabled);
 		decoration.toggle.setAttr('aria-pressed', String(this.plugin.settings.bookModeEnabled));
@@ -483,7 +534,6 @@ export class DecorationController {
 		const books = this.plugin.scopeResolver.listBooks();
 		const booksById = new Map(books.map((book) => [book.id, book]));
 		const bookOrder = this.plugin.navigation.getBookOrder();
-		const bookOrderIndexes = new Map(bookOrder.map((id, index) => [id, index]));
 		const openBookIds = this.plugin.navigation.getOpenBookIds();
 		const selected = books.find((book) => book.id === this.plugin.settings.selectedBookId) ?? books[0];
 		if (!selected) return;
@@ -493,6 +543,8 @@ export class DecorationController {
 		}
 		const decoration = this.explorerDecorations.get(root);
 		if (!decoration) return;
+		const tree = getExplorerTreeAdapter(this.plugin, root);
+		decoration.modelReady = tree !== null;
 		decoration.bar.setText(selected.name);
 		decoration.bar.setAttr('aria-label', `Selected book: ${selected.name}. Choose another book.`);
 		decoration.bar.toggle(this.plugin.settings.bookModeEnabled);
@@ -500,40 +552,66 @@ export class DecorationController {
 		decoration.bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(selected));
 		const visibleBookIds = new Set(openBookIds);
 		visibleBookIds.add(selected.id);
-		decoration.openAnother.toggle(this.plugin.settings.bookModeEnabled && books.some((book) => !visibleBookIds.has(book.id)));
 		root.toggleClass('scope-tabs-book-mode', this.plugin.settings.bookModeEnabled);
 
-		root.querySelectorAll<HTMLElement>('.scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary, .scope-tabs-book-root-title-hidden').forEach((el) => {
+		const rootItems = new Map<string, HTMLElement>();
+		for (const item of tree?.rootItems ?? []) rootItems.set(item.path, item.el);
+		for (const item of getExplorerRootItems(root)) rootItems.set(getExplorerItemPath(item), item);
+		for (const el of new Set(rootItems.values())) {
 			el.style.removeProperty('order');
 			el.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-root-title-hidden']);
-		});
-		root.querySelectorAll<HTMLElement>('.scope-tabs-book-root-list').forEach((el) => el.removeClass('scope-tabs-book-root-list'));
-		if (!this.plugin.settings.bookModeEnabled) {
-			root.querySelectorAll('.scope-tabs-book-subtree-bar').forEach((el) => el.remove());
+			el.querySelector<HTMLElement>(':scope > .nav-folder-title')?.removeClass('scope-tabs-book-root-title-hidden');
+		}
+		if (this.plugin.settings.bookModeEnabled && !tree) {
+			root.removeClass('scope-tabs-book-mode');
+			decoration.bar.toggle(false);
+			decoration.openAnother.toggle(false);
+			root.querySelectorAll('.scope-tabs-book-subtree-bar').forEach((bar) => bar.remove());
 			return;
 		}
-		for (const item of getExplorerRootItems(root)) {
-			item.parentElement?.addClass('scope-tabs-book-root-list');
-			const path = getExplorerItemPath(item);
+		if (!this.plugin.settings.bookModeEnabled) {
+			for (const item of rootItems.values()) item.querySelector(':scope > .scope-tabs-book-subtree-bar')?.remove();
+			tree?.restoreOrder();
+			tree?.invalidate();
+			decoration.openAnother.remove();
+			decoration.filesParent.insertBefore(decoration.openAnother, decoration.files);
+			decoration.openAnother.toggle(false);
+			return;
+		}
+		const secondaryPaths = bookOrder.filter((id) => id !== selected.id && openBookIds.has(id));
+		for (const book of books) {
+			if (book.id !== selected.id && openBookIds.has(book.id) && !secondaryPaths.includes(book.id)) secondaryPaths.push(book.id);
+		}
+		tree?.reorder([selected.id, ...secondaryPaths]);
+		let selectedItem: HTMLElement | null = null;
+		for (const [path, item] of rootItems) {
 			const subtreeBar = item.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-bar');
 			if (path === selected.folderPath && item.hasClass('nav-folder')) {
+				selectedItem = item;
 				subtreeBar?.remove();
 				item.addClass('scope-tabs-book-mode-selected');
 				item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.addClass('scope-tabs-book-root-title-hidden');
-				expandExplorerFolder(item);
+				tree?.itemsByPath.get(path)?.expand();
 			} else if (openBookIds.has(path) && item.hasClass('nav-folder')) {
 				const book = booksById.get(path);
 				if (!book) continue;
 				item.addClass('scope-tabs-book-mode-secondary');
-				item.style.order = String(bookOrderIndexes.get(path) ?? bookOrder.length);
 				item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.addClass('scope-tabs-book-root-title-hidden');
-				expandExplorerFolder(item);
+				tree?.itemsByPath.get(path)?.expand();
 				this.ensureSubtreeBar(item, book);
 			} else {
 				subtreeBar?.remove();
 				item.addClass('scope-tabs-book-mode-hidden');
 			}
 		}
+		const showOpenAnother = books.some((book) => !visibleBookIds.has(book.id));
+		if (selectedItem) {
+			if (selectedItem.lastElementChild !== decoration.openAnother) selectedItem.appendChild(decoration.openAnother);
+			decoration.openAnother.toggle(showOpenAnother);
+		} else {
+			decoration.openAnother.toggle(false);
+		}
+		tree?.invalidate();
 	}
 
 	private ensureSubtreeBar(folder: HTMLElement, book: BookScope): void {
@@ -568,7 +646,7 @@ export class DecorationController {
 		if (!close) {
 			close = bar.createSpan({ cls: 'scope-tabs-book-subtree-close' });
 			close.createSpan({ cls: 'scope-tabs-book-subtree-close-label', text: 'Close latest book' });
-			close.createSpan({ cls: 'scope-tabs-book-subtree-close-hint', text: 'Shift+click: choose instance or tab · Ctrl+click: close all' });
+			close.createSpan({ cls: 'scope-tabs-book-subtree-close-hint', text: 'Shift+click: choose instance or tab · Ctrl+click: close all instances' });
 		}
 		if (title.textContent !== book.name) title.setText(book.name);
 		bar.setAttr('aria-label', `Close the latest ${book.name} book. Shift-click to choose an instance or tab. Ctrl-click to close every instance and tab for this book.`);
@@ -593,16 +671,17 @@ export class DecorationController {
 				cls: 'scope-tabs-book-instance-option scope-tabs-book-instance-heading',
 				text: `${location === 'popout' ? 'Pop-out' : 'Main workspace'} ${index + 1}${file ? ` — ${file.basename}` : ''}`,
 			});
-			label.addEventListener('mouseenter', () => this.setCloseTarget(leaf, 'group'));
-			label.addEventListener('mouseleave', () => this.clearCloseTarget());
-			menu.addItem((item) => item
-				.setTitle(title)
-				.setIcon(location === 'popout' ? 'picture-in-picture-2' : 'panels-top-left')
-				.setWarning(true)
-				.onClick(() => {
-					this.clearCloseTarget();
-					this.plugin.navigation.closeBookGroupInstance(book, leaf);
-				}));
+			menu.addItem((item) => {
+				item
+					.setTitle(title)
+					.setIcon(location === 'popout' ? 'picture-in-picture-2' : 'panels-top-left')
+					.setWarning(true)
+					.onClick(() => {
+						this.clearCloseTarget();
+						this.plugin.navigation.closeBookGroupInstance(book, leaf);
+					});
+				this.bindClosePreview(label, leaf, 'group');
+			});
 
 			for (const child of getInternalTabGroupDom(leaf)?.children ?? [leaf]) {
 				const childFile = getLeafFile(child, this.plugin.app.vault);
@@ -612,16 +691,17 @@ export class DecorationController {
 					cls: 'scope-tabs-book-instance-option scope-tabs-book-instance-tab',
 					text: childFile.basename,
 				});
-				tabLabel.addEventListener('mouseenter', () => this.setCloseTarget(child, 'tab'));
-				tabLabel.addEventListener('mouseleave', () => this.clearCloseTarget());
-				menu.addItem((item) => item
-					.setTitle(tabTitle)
-					.setIcon('file')
-					.setWarning(true)
-					.onClick(() => {
-						this.clearCloseTarget();
-						this.plugin.navigation.closeBookTab(child);
-					}));
+				menu.addItem((item) => {
+					item
+						.setTitle(tabTitle)
+						.setIcon('file')
+						.setWarning(true)
+						.onClick(() => {
+							this.clearCloseTarget();
+							this.plugin.navigation.closeBookTab(child);
+						});
+					this.bindClosePreview(tabLabel, child, 'tab');
+				});
 			}
 			if (index < instances.length - 1) menu.addSeparator();
 		});
@@ -636,7 +716,13 @@ export class DecorationController {
 		return true;
 	}
 
-	private setCloseTarget(leaf: WorkspaceLeaf, targetKind: 'group' | 'tab'): void {
+	private bindClosePreview(label: HTMLElement, leaf: WorkspaceLeaf, targetKind: 'group' | 'tab'): void {
+		const hoverTarget = label.closest<HTMLElement>('.menu-item') ?? label;
+		hoverTarget.addEventListener('mouseenter', () => this.setCloseTarget(leaf, targetKind, hoverTarget.ownerDocument.defaultView));
+		hoverTarget.addEventListener('mouseleave', () => this.clearCloseTarget());
+	}
+
+	private setCloseTarget(leaf: WorkspaceLeaf, targetKind: 'group' | 'tab', sourceWindow: Window | null): void {
 		this.clearCloseTarget();
 		const group = getInternalTabGroupDom(leaf);
 		const target = targetKind === 'tab'
@@ -645,7 +731,7 @@ export class DecorationController {
 		if (!target) return;
 		target.addClass('scope-tabs-close-target');
 		this.closeTargetEl = target;
-		this.restoreClosePreviewWindow = bringPopoutForwardForClosePreview(leaf);
+		this.restoreClosePreviewWindow = bringPopoutForwardForClosePreview(leaf, sourceWindow);
 	}
 
 	private clearCloseTarget(): void {
@@ -800,13 +886,107 @@ function getExplorerItemPath(item: HTMLElement): string {
 	return item.dataset.path ?? item.getAttribute('data-path') ?? title?.dataset.path ?? title?.getAttribute('data-path') ?? '';
 }
 
-/** Folder expansion is DOM-sensitive and optional; hiding/filtering remains safe if the adapter cannot expand it. */
-function expandExplorerFolder(folder: HTMLElement): void {
-	const title = folder.querySelector<HTMLElement>(':scope > .nav-folder-title');
-	if (!title) return;
-	const collapsed = folder.hasClass('is-collapsed') || title.hasClass('is-collapsed') || title.getAttribute('aria-expanded') === 'false';
-	if (!collapsed) return;
-	title.dispatchEvent(new MouseEvent('click', { bubbles: true, view: title.ownerDocument.defaultView }));
+/**
+ * Obsidian's file explorer is virtualized: off-screen item elements are intentionally detached,
+ * and its logical `vChildren` order—not DOM/CSS order—drives later reattachment. There is no
+ * public folder-expansion API, so this adapter feature-detects the same tiny model surface used by
+ * core sorting/filtering. If any required piece is absent, book mode falls back to decoration only.
+ */
+function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): ExplorerTreeAdapter | null {
+	const leaf = plugin.app.workspace.getLeavesOfType('file-explorer')
+		.find((candidate) => candidate.view.containerEl === root);
+	const viewValue: unknown = leaf?.view;
+	if (!isUnknownRecord(viewValue)) return null;
+	const fileItems = viewValue.fileItems;
+	const getSortedFolderItems = viewValue.getSortedFolderItems;
+	const tree = viewValue.tree;
+	if (!isUnknownRecord(fileItems) || typeof getSortedFolderItems !== 'function' || !isUnknownRecord(tree)) return null;
+	const infinityScroll = tree.infinityScroll;
+	if (!isUnknownRecord(infinityScroll)) return null;
+	const invalidateAll = infinityScroll.invalidateAll;
+	if (typeof invalidateAll !== 'function') return null;
+	const rootModel = infinityScroll.rootEl;
+	if (!isUnknownRecord(rootModel)) return null;
+	const virtualChildren = rootModel.vChildren;
+	if (!isUnknownRecord(virtualChildren)) return null;
+	const setChildren = virtualChildren.setChildren;
+	if (typeof setChildren !== 'function') return null;
+
+	let sortedValues: unknown;
+	try {
+		sortedValues = Reflect.apply(getSortedFolderItems, viewValue, [plugin.app.vault.getRoot()]);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(sortedValues)) return null;
+	const rootItems: ExplorerTreeItemAdapter[] = [];
+	for (const value of sortedValues) {
+		if (!isUnknownRecord(value)) return null;
+		const file = value.file;
+		const el = value.el;
+		if (!isUnknownRecord(file) || typeof file.path !== 'string' || !isHtmlElement(el, root.ownerDocument)) return null;
+		const setCollapsed = value.setCollapsed;
+		const childrenEl = isHtmlElement(value.childrenEl, root.ownerDocument) ? value.childrenEl : null;
+		rootItems.push({
+			identity: value,
+			el,
+			path: file.path,
+			expand: () => {
+				if (value.collapsed === false && childrenEl && childrenEl.parentElement !== el) {
+					// Repair an inconsistent expanded item left by an interrupted async collapse/render pass.
+					childrenEl.show();
+					el.appendChild(childrenEl);
+					return;
+				}
+				if (value.collapsed !== true || typeof setCollapsed !== 'function') return;
+				try {
+					void Reflect.apply(setCollapsed, value, [false, false]);
+				} catch {
+					// Expansion is optional when Obsidian changes its internal explorer model.
+				}
+			},
+		});
+	}
+	const itemsByPath = new Map(rootItems.map((item) => [item.path, item]));
+	const baseOrder = rootItems.map((item) => item.identity);
+	const setOrder = (items: object[]): void => {
+		const current = virtualChildren.children;
+		if (Array.isArray(current) && current.length === items.length && current.every((item, index) => item === items[index])) return;
+		try {
+			Reflect.apply(setChildren, virtualChildren, [items]);
+		} catch {
+			// Keeping native order is the safe fallback.
+		}
+	};
+	const invalidate = (): void => {
+		try {
+			Reflect.apply(invalidateAll, infinityScroll, []);
+		} catch {
+			// DOM decoration remains usable if virtualizer invalidation becomes unavailable.
+		}
+	};
+	return {
+		rootItems,
+		itemsByPath,
+		reorder: (paths) => {
+			const ordered: object[] = [];
+			const seen = new Set<object>();
+			for (const path of paths) {
+				const item = itemsByPath.get(path)?.identity;
+				if (!item || seen.has(item)) continue;
+				seen.add(item);
+				ordered.push(item);
+			}
+			for (const item of baseOrder) {
+				if (seen.has(item)) continue;
+				seen.add(item);
+				ordered.push(item);
+			}
+			setOrder(ordered);
+		},
+		restoreOrder: () => setOrder(baseOrder),
+		invalidate,
+	};
 }
 
 function getInternalTabGroupDom(leaf: WorkspaceLeaf): InternalTabGroupDom | null {
@@ -880,7 +1060,8 @@ function getAlwaysOnTopCompatibility(leaf: WorkspaceLeaf): AlwaysOnTopCompatibil
 	const popout = root instanceof WorkspaceWindow || leaf.view.containerEl.ownerDocument !== document;
 	if (!popout || !isUnknownRecord(root)) return null;
 	const rootWindow = root.win;
-	const browserWindow = isUnknownRecord(rootWindow) ? rootWindow.electronWindow : undefined;
+	const browserWindow = getElectronWindow(leaf.view.containerEl.ownerDocument.defaultView)
+		?? (isUnknownRecord(rootWindow) ? rootWindow.electronWindow : undefined);
 	if (!isUnknownRecord(browserWindow)) return null;
 	const isAlwaysOnTop = browserWindow.isAlwaysOnTop;
 	const setAlwaysOnTop = browserWindow.setAlwaysOnTop;
@@ -908,31 +1089,37 @@ function getAlwaysOnTopCompatibility(leaf: WorkspaceLeaf): AlwaysOnTopCompatibil
  * always-on-top methods are desktop-only implementation details, so every method is detected and
  * failure simply leaves the preview in its current stacking position.
  */
-function bringPopoutForwardForClosePreview(leaf: WorkspaceLeaf): (() => void) | null {
-	if (leaf.view.containerEl.ownerDocument === document) return null;
-	const root = leaf.getRoot();
-	if (!isUnknownRecord(root)) return null;
-	const rootWindow = root.win;
-	const browserWindow = isUnknownRecord(rootWindow) ? rootWindow.electronWindow : undefined;
+function bringPopoutForwardForClosePreview(leaf: WorkspaceLeaf, sourceWindow: Window | null): (() => void) | null {
+	const targetWindow = leaf.view.containerEl.ownerDocument.defaultView;
+	if (!targetWindow || targetWindow === sourceWindow) return null;
+	const browserWindow = getElectronWindow(targetWindow);
 	if (!isUnknownRecord(browserWindow)) return null;
+	const previousFrontWindow = getElectronWindow(sourceWindow);
 	const showInactive = browserWindow.showInactive;
 	const moveTop = browserWindow.moveTop;
 	const isAlwaysOnTop = browserWindow.isAlwaysOnTop;
 	const setAlwaysOnTop = browserWindow.setAlwaysOnTop;
-	const BrowserWindowConstructor = browserWindow.constructor;
-	const getFocusedWindow: unknown = typeof BrowserWindowConstructor === 'function'
-		? Reflect.get(BrowserWindowConstructor, 'getFocusedWindow') as unknown
-		: undefined;
-	let previousFrontWindow: unknown;
 	let wasPinned = false;
+	let repeatMoveTimer: number | null = null;
 	try {
-		if (typeof getFocusedWindow === 'function') {
-			previousFrontWindow = Reflect.apply(getFocusedWindow, BrowserWindowConstructor, []);
-		}
 		if (typeof isAlwaysOnTop === 'function') wasPinned = Reflect.apply(isAlwaysOnTop, browserWindow, []) === true;
+		if (!wasPinned && typeof setAlwaysOnTop === 'function') {
+			try {
+				Reflect.apply(setAlwaysOnTop, browserWindow, [true, 'pop-up-menu']);
+			} catch {
+				Reflect.apply(setAlwaysOnTop, browserWindow, [true]);
+			}
+		}
 		if (typeof showInactive === 'function') Reflect.apply(showInactive, browserWindow, []);
 		if (typeof moveTop === 'function') Reflect.apply(moveTop, browserWindow, []);
-		if (!wasPinned && typeof setAlwaysOnTop === 'function') Reflect.apply(setAlwaysOnTop, browserWindow, [true]);
+		repeatMoveTimer = window.setTimeout(() => {
+			try {
+				if (typeof showInactive === 'function') Reflect.apply(showInactive, browserWindow, []);
+				if (typeof moveTop === 'function') Reflect.apply(moveTop, browserWindow, []);
+			} catch {
+				// The first stacking attempt may already have succeeded.
+			}
+		}, 0);
 	} catch {
 		// The red DOM preview remains useful even if Electron window stacking is unavailable.
 	}
@@ -940,16 +1127,26 @@ function bringPopoutForwardForClosePreview(leaf: WorkspaceLeaf): (() => void) | 
 	return () => {
 		if (restored) return;
 		restored = true;
+		if (repeatMoveTimer !== null) window.clearTimeout(repeatMoveTimer);
 		try {
 			if (!wasPinned && typeof setAlwaysOnTop === 'function') {
 				Reflect.apply(setAlwaysOnTop, browserWindow, [false]);
 			}
+		} catch {
+			// The pop-out may already be closing.
+		}
+		try {
 			if (isUnknownRecord(previousFrontWindow) && previousFrontWindow !== browserWindow) {
 				const restoreTop = previousFrontWindow.moveTop;
 				if (typeof restoreTop === 'function') Reflect.apply(restoreTop, previousFrontWindow, []);
 			}
 		} catch {
-			// Window stacking is optional and must never block closing a tab or book.
+			// Restoring the prior stacking order is optional and must never block closing.
 		}
 	};
+}
+
+function getElectronWindow(candidate: Window | null): unknown {
+	const windowRecord: unknown = candidate;
+	return isUnknownRecord(windowRecord) ? windowRecord.electronWindow : undefined;
 }

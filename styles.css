@@ -294,23 +294,6 @@ body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
 	padding-left: 0;
 }
 
-.scope-tabs-book-mode .scope-tabs-book-root-list {
-	display: flex;
-	flex-direction: column;
-}
-
-.scope-tabs-book-mode .scope-tabs-book-mode-selected {
-	order: -10000;
-}
-
-.scope-tabs-book-mode .scope-tabs-book-mode-secondary {
-	order: 0;
-}
-
-.scope-tabs-book-mode .scope-tabs-open-book-button {
-	order: 10000;
-}
-
 .scope-tabs-radio-label {
 	display: inline-flex;
 	align-items: center;

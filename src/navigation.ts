@@ -1,6 +1,7 @@
 import {
 	Notice,
 	TFile,
+	TFolder,
 	WorkspaceLeaf,
 	WorkspaceWindow,
 	type OpenViewState,
@@ -111,7 +112,9 @@ export class BookNavigationController {
 	getCanonicalBookLeaf(book: BookScope): WorkspaceLeaf | null {
 		const group = this.canonicalGroups.get(book.id);
 		if (!group) return null;
-		const leaves = this.getLeavesForGroup(group);
+		// Detached tab groups can retain internal children after a pop-out closes.
+		// Only reuse a canonical group that Obsidian still exposes in the live workspace.
+		const leaves = this.collectGroups().get(group) ?? [];
 		if (leaves.length === 0 || !this.groupContainsBook(leaves, book.id)) {
 			this.forgetGroup(group);
 			return null;
@@ -805,9 +808,9 @@ export class BookNavigationController {
 	private resolveBookEntryFile(book: BookScope): TFile | null {
 		const configured = this.plugin.app.vault.getFileByPath(`${book.folderPath}/${this.plugin.settings.configFileBaseName}.md`);
 		if (configured) return configured;
-		return this.plugin.app.vault.getFiles()
-			.filter((file) => this.plugin.scopeResolver.resolveFile(file)?.id === book.id)
-			.sort(compareBookEntryFiles)[0] ?? null;
+		const root = this.plugin.app.vault.getFolderByPath(book.folderPath);
+		if (!root) return null;
+		return collectBookFiles(root).sort(compareBookEntryFiles)[0] ?? null;
 	}
 
 	private ensureSourceGroup(leaf: WorkspaceLeaf, book: BookScope): PersistedGroupRecord {
@@ -1235,6 +1238,17 @@ function compareBookEntryFiles(left: TFile, right: TFile): number {
 	if (extensionOrder !== 0) return extensionOrder;
 	const depthOrder = left.path.split('/').length - right.path.split('/').length;
 	return depthOrder !== 0 ? depthOrder : left.path.localeCompare(right.path);
+}
+
+function collectBookFiles(root: TFolder): TFile[] {
+	const files: TFile[] = [];
+	const pending = [...root.children];
+	while (pending.length > 0) {
+		const entry = pending.pop();
+		if (entry instanceof TFile) files.push(entry);
+		else if (entry instanceof TFolder) pending.push(...entry.children);
+	}
+	return files;
 }
 
 function isUnknownRecord(value: unknown): value is Record<string, unknown> {

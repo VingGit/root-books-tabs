@@ -46,6 +46,7 @@ Responsibilities:
 - reuse an already-open destination file, or create a new tab for a new same-book destination;
 - reuse a managed destination-book tab group when one exists;
 - create a split/pop-out group when a new book is encountered;
+- find a missing-index fallback by walking only that book's `TFolder` tree, never by enumerating the whole vault;
 - place main-workspace books in cardinal or configurable clockwise Grid/overflow layouts;
 - preserve manually created destination leaves and free groups/windows;
 - adopt Obsidian's forced empty leaf before creating a split;
@@ -118,7 +119,7 @@ Prefer documented Obsidian workspace primitives for routing:
 Some requested presentation operations do not have a complete public API. Current compatibility-sensitive areas are:
 
 - mapping a `WorkspaceLeaf` to its tab-header DOM element;
-- file-explorer root-item filtering, expansion, and action-bar/book-bar injection;
+- file-explorer root-item filtering, expansion, and action-bar/book-bar injection; Obsidian 1.13 virtualizes this tree, so the isolated adapter feature-detects `fileItems`, logical root `vChildren`, absolute `setCollapsed(false, false)`, and `infinityScroll.invalidateAll()` instead of relying on attached DOM order or synthetic clicks;
 - inserting a decoration-only book pseudo-tab before real tab headers;
 - interpreting drag/drop on that pseudo-tab as a view-state-preserving whole-group transfer with feature-detected workspace group DOM targets;
 - the optional desktop `window.electronWindow` adapter used only for pop-out always-on-top pinning;
@@ -145,8 +146,8 @@ Unload must be safe and idempotent:
 
 1. restore the exact saved `WorkspaceLeaf.prototype.openFile` implementation;
 2. restore the app-instance note-parent and optional folder-creation methods only when Root Books Tabs still owns each patch;
-3. disconnect explorer observers and remove injected toggles, bars, labels, pseudo-tabs, and styles;
-4. restore hidden explorer items and clear plugin classes, data attributes, and CSS variables;
+3. disconnect explorer observers, restore the explorer's native logical root order, and remove injected toggles, bars, labels, pseudo-tabs, and styles;
+4. restore hidden explorer items (including virtualizer-detached items) and clear plugin classes, data attributes, and CSS variables;
 5. leave user tabs, notes, and workspace layout intact.
 
 Never treat ordinary plugin unload as an uninstall event.
