@@ -28,6 +28,7 @@ interface ExplorerTreeItemAdapter {
 	identity: object;
 	el: HTMLElement;
 	path: string;
+	collapse: () => void;
 	expand: () => void;
 }
 
@@ -60,8 +61,7 @@ export class DecorationController {
 	private bookGroupDrag: BookGroupDrag | null = null;
 	private bookDropTargetEl: HTMLElement | null = null;
 	private bookButtonLongPressCancels = new Set<() => void>();
-	private explorerBookDragId: string | null = null;
-	private explorerBookDropTargetEl: HTMLElement | null = null;
+	private collapsedSecondaryBookIds = new Set<string>();
 	private sortingTabs = false;
 
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
@@ -93,7 +93,7 @@ export class DecorationController {
 		this.clearCloseTarget();
 		this.clearBookGroupDrag();
 		this.clearBookButtonLongPresses();
-		this.clearExplorerBookDrag();
+		this.collapsedSecondaryBookIds.clear();
 		for (const removeListeners of this.bookDragDocuments.values()) removeListeners();
 		this.bookDragDocuments.clear();
 		const docs = new Set<Document>([...this.getWorkspaceDocuments(), ...this.customStyleSheets.keys()]);
@@ -615,7 +615,9 @@ export class DecorationController {
 				if (!book) continue;
 				item.addClass('scope-tabs-book-mode-secondary');
 				item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.addClass('scope-tabs-book-root-title-hidden');
-				tree?.itemsByPath.get(path)?.expand();
+				const treeItem = tree?.itemsByPath.get(path);
+				if (this.collapsedSecondaryBookIds.has(book.id)) treeItem?.collapse();
+				else treeItem?.expand();
 				this.ensureSubtreeControls(item, book);
 			} else {
 				subtreeControls?.remove();
@@ -645,7 +647,6 @@ export class DecorationController {
 				cls: 'scope-tabs-book-subtree-handle',
 				attr: { type: 'button' },
 			});
-			setIcon(handle, 'list-tree');
 			const bar = controlsEl.createEl('button', {
 				cls: 'scope-tabs-book-subtree-bar',
 				attr: { type: 'button' },
@@ -676,6 +677,8 @@ export class DecorationController {
 			handle.addEventListener('click', (event: MouseEvent) => {
 				event.preventDefault();
 				event.stopPropagation();
+				const id = controls?.dataset.bookId;
+				if (id) this.toggleSecondaryBookSubtree(folder, id);
 			});
 			copy.addEventListener('click', (event: MouseEvent) => {
 				event.preventDefault();
@@ -684,49 +687,6 @@ export class DecorationController {
 				const currentBook = this.plugin.scopeResolver.listBooks().find((candidate) => candidate.id === id);
 				if (currentBook) void this.plugin.navigation.openBookCopy(currentBook);
 			});
-			let pointerDrag: { pointerId: number; startX: number; startY: number; dragging: boolean } | null = null;
-			handle.addEventListener('pointerdown', (event: PointerEvent) => {
-				if (event.button !== 0 || !controlsEl.dataset.bookId) return;
-				pointerDrag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, dragging: false };
-				handle.setPointerCapture(event.pointerId);
-			});
-			handle.addEventListener('pointermove', (event: PointerEvent) => {
-				const drag = pointerDrag;
-				if (!drag || drag.pointerId !== event.pointerId) return;
-				if (!drag.dragging && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
-				if (!drag.dragging) {
-					drag.dragging = true;
-					this.explorerBookDragId = controlsEl.dataset.bookId ?? null;
-					controlsEl.addClass('scope-tabs-book-subtree-dragging');
-				}
-				event.preventDefault();
-				const target = controlsEl.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.scope-tabs-book-subtree-controls');
-				if (target && target !== controlsEl) this.setExplorerBookDropTarget(target, event.clientY);
-				else this.clearExplorerBookDropTarget();
-			});
-			const finishPointerDrag = (event: PointerEvent, cancelled: boolean): void => {
-				const drag = pointerDrag;
-				if (!drag || drag.pointerId !== event.pointerId) return;
-				const dragged = drag.dragging;
-				let reordered = false;
-				if (dragged && !cancelled) {
-					const target = controlsEl.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.scope-tabs-book-subtree-controls');
-					const sourceId = controlsEl.dataset.bookId;
-					const targetId = target?.dataset.bookId;
-					if (target && target !== controlsEl && sourceId && targetId) {
-						const rect = target.getBoundingClientRect();
-						const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-						this.plugin.navigation.reorderSecondaryBook(sourceId, targetId, placement);
-						reordered = true;
-					}
-				}
-				if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-				pointerDrag = null;
-				this.clearExplorerBookDrag();
-				if (reordered) this.queueExplorerRefresh();
-			};
-			handle.addEventListener('pointerup', (event: PointerEvent) => finishPointerDrag(event, false));
-			handle.addEventListener('pointercancel', (event: PointerEvent) => finishPointerDrag(event, true));
 		}
 		controls.dataset.bookId = book.id;
 		const handle = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-handle');
@@ -742,8 +702,11 @@ export class DecorationController {
 		}
 		close.querySelector(':scope > .scope-tabs-book-subtree-close-hint')?.remove();
 		if (title.textContent !== book.name) title.setText(book.name);
+		const collapsed = this.collapsedSecondaryBookIds.has(book.id);
+		setIcon(handle, collapsed ? 'chevron-right' : 'chevron-down');
 		setTooltip(bar, `Close the latest ${book.name} book. Shift-click to choose an instance or tab. Ctrl-click to close every instance and tab for this book.`, { delay: 0, placement: 'bottom' });
-		setTooltip(handle, `Drag to reorder ${book.name}`, { delay: 0, placement: 'left' });
+		setTooltip(handle, collapsed ? 'Expand subtree' : 'Collapse subtree', { delay: 0, placement: 'left' });
+		handle.setAttr('aria-expanded', collapsed ? 'false' : 'true');
 		setTooltip(copy, `Open another ${book.name} instance`, { delay: 0, placement: 'right' });
 		bar.toggleClass('scope-tabs-book-switcher-colored', this.plugin.settings.colorBookSwitcher);
 		bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
@@ -834,25 +797,20 @@ export class DecorationController {
 		this.closeTargetEl = target;
 	}
 
-	private setExplorerBookDropTarget(target: HTMLElement, clientY: number): void {
-		if (this.explorerBookDropTargetEl && this.explorerBookDropTargetEl !== target) {
-			this.explorerBookDropTargetEl.removeClasses(['scope-tabs-book-subtree-drop-before', 'scope-tabs-book-subtree-drop-after']);
+	private toggleSecondaryBookSubtree(folder: HTMLElement, bookId: string): void {
+		const book = this.plugin.scopeResolver.listBooks().find((candidate) => candidate.id === bookId);
+		if (!book) return;
+		const collapse = !this.collapsedSecondaryBookIds.has(bookId);
+		if (collapse) this.collapsedSecondaryBookIds.add(bookId);
+		else this.collapsedSecondaryBookIds.delete(bookId);
+		for (const root of this.explorerDecorations.keys()) {
+			if (!root.contains(folder)) continue;
+			const item = getExplorerTreeAdapter(this.plugin, root)?.itemsByPath.get(book.folderPath);
+			if (collapse) item?.collapse();
+			else item?.expand();
+			break;
 		}
-		const rect = target.getBoundingClientRect();
-		target.toggleClass('scope-tabs-book-subtree-drop-before', clientY < rect.top + rect.height / 2);
-		target.toggleClass('scope-tabs-book-subtree-drop-after', clientY >= rect.top + rect.height / 2);
-		this.explorerBookDropTargetEl = target;
-	}
-
-	private clearExplorerBookDropTarget(): void {
-		this.explorerBookDropTargetEl?.removeClasses(['scope-tabs-book-subtree-drop-before', 'scope-tabs-book-subtree-drop-after']);
-		this.explorerBookDropTargetEl = null;
-	}
-
-	private clearExplorerBookDrag(): void {
-		this.clearExplorerBookDropTarget();
-		for (const doc of this.getWorkspaceDocuments()) doc.querySelectorAll<HTMLElement>('.scope-tabs-book-subtree-dragging').forEach((el) => el.removeClass('scope-tabs-book-subtree-dragging'));
-		this.explorerBookDragId = null;
+		this.queueExplorerRefresh();
 	}
 
 	private clearCloseTarget(): void {
@@ -1052,6 +1010,14 @@ function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): Exp
 			identity: value,
 			el,
 			path: file.path,
+			collapse: () => {
+				if (value.collapsed === true || typeof setCollapsed !== 'function') return;
+				try {
+					void Reflect.apply(setCollapsed, value, [true, false]);
+				} catch {
+					// Collapse is optional when Obsidian changes its internal explorer model.
+				}
+			},
 			expand: () => {
 				if (value.collapsed === false && childrenEl && childrenEl.parentElement !== el) {
 					// Repair an inconsistent expanded item left by an interrupted async collapse/render pass.
