@@ -198,6 +198,33 @@ export class BookNavigationController {
 		return this.openNewBookGroup(source, book, entryFile, undefined, this.originalOpenFile, popout ? 'popout' : 'main');
 	}
 
+	async openBookCopy(book: BookScope): Promise<boolean> {
+		const entryFile = this.resolveBookEntryFile(book);
+		if (!entryFile || !this.originalOpenFile) return false;
+		const source = this.plugin.app.workspace.getMostRecentLeaf() ?? this.findMainWorkspaceLeaf();
+		if (!source) return false;
+		this.routing = true;
+		let createdLeaf: WorkspaceLeaf | null = null;
+		try {
+			createdLeaf = this.createMainBookLeaf(source);
+			this.registerFreeGroup(createdLeaf);
+			await this.originalOpenFile.call(createdLeaf, entryFile);
+			this.syncBookOrder();
+			this.focusLeaf(createdLeaf);
+			return true;
+		} catch (error) {
+			console.error('Root Books Tabs could not create a book copy.', error);
+			if (createdLeaf) {
+				this.forgetGroup(createdLeaf.parent);
+				createdLeaf.detach();
+			}
+			new Notice('Root books tabs could not open another instance of this book.');
+			return false;
+		} finally {
+			this.routing = false;
+		}
+	}
+
 	closeBook(book: BookScope): void {
 		const canonical = this.getCanonicalBookLeaf(book);
 		if (canonical) {

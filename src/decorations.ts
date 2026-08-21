@@ -1,4 +1,4 @@
-import { MarkdownView, Menu, Notice, WorkspaceLeaf, WorkspaceWindow, setIcon } from 'obsidian';
+import { MarkdownView, Menu, Notice, WorkspaceLeaf, WorkspaceWindow, setIcon, setTooltip, type Vault } from 'obsidian';
 import { getLeafFile } from './leaf-file';
 import type ScopeTabsPlugin from './main';
 import type { BookScope, CardinalDirection } from './types';
@@ -62,7 +62,6 @@ export class DecorationController {
 	private bookButtonLongPressCancels = new Set<() => void>();
 	private explorerBookDragId: string | null = null;
 	private explorerBookDropTargetEl: HTMLElement | null = null;
-	private explorerBookHandleDragged = false;
 	private sortingTabs = false;
 
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
@@ -651,6 +650,12 @@ export class DecorationController {
 				cls: 'scope-tabs-book-subtree-bar',
 				attr: { type: 'button' },
 			});
+			controlsEl.createSpan({ cls: 'scope-tabs-book-subtree-divider', attr: { 'aria-hidden': 'true' } });
+			const copy = controlsEl.createEl('button', {
+				cls: 'scope-tabs-book-subtree-copy',
+				attr: { type: 'button' },
+			});
+			setIcon(copy, 'copy-plus');
 			const children = folder.querySelector<HTMLElement>(':scope > .nav-folder-children');
 			if (children) folder.insertBefore(controls, children);
 			bar.addEventListener('click', (event: MouseEvent) => {
@@ -669,11 +674,15 @@ export class DecorationController {
 				this.plugin.navigation.closeLatestBookGroup(currentBook);
 			});
 			handle.addEventListener('click', (event: MouseEvent) => {
+				event.preventDefault();
 				event.stopPropagation();
-				if (this.explorerBookHandleDragged) return;
+			});
+			copy.addEventListener('click', (event: MouseEvent) => {
+				event.preventDefault();
+				event.stopPropagation();
 				const id = controls?.dataset.bookId;
 				const currentBook = this.plugin.scopeResolver.listBooks().find((candidate) => candidate.id === id);
-				if (currentBook) this.showBookInstancePicker(event, currentBook);
+				if (currentBook) void this.plugin.navigation.openBookCopy(currentBook);
 			});
 			let pointerDrag: { pointerId: number; startX: number; startY: number; dragging: boolean } | null = null;
 			handle.addEventListener('pointerdown', (event: PointerEvent) => {
@@ -688,7 +697,6 @@ export class DecorationController {
 				if (!drag.dragging) {
 					drag.dragging = true;
 					this.explorerBookDragId = controlsEl.dataset.bookId ?? null;
-					this.explorerBookHandleDragged = true;
 					controlsEl.addClass('scope-tabs-book-subtree-dragging');
 				}
 				event.preventDefault();
@@ -716,7 +724,6 @@ export class DecorationController {
 				pointerDrag = null;
 				this.clearExplorerBookDrag();
 				if (reordered) this.queueExplorerRefresh();
-				if (dragged) window.setTimeout(() => { this.explorerBookHandleDragged = false; }, 0);
 			};
 			handle.addEventListener('pointerup', (event: PointerEvent) => finishPointerDrag(event, false));
 			handle.addEventListener('pointercancel', (event: PointerEvent) => finishPointerDrag(event, true));
@@ -724,18 +731,20 @@ export class DecorationController {
 		controls.dataset.bookId = book.id;
 		const handle = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-handle');
 		const bar = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-bar');
-		if (!bar || !handle) return;
+		const copy = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-copy');
+		if (!bar || !handle || !copy) return;
 		let title = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-title');
 		let close = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-close');
 		if (!title) title = bar.createSpan({ cls: 'scope-tabs-book-subtree-title' });
 		if (!close) {
 			close = bar.createSpan({ cls: 'scope-tabs-book-subtree-close' });
 			close.createSpan({ cls: 'scope-tabs-book-subtree-close-label', text: 'Close latest book' });
-			close.createSpan({ cls: 'scope-tabs-book-subtree-close-hint', text: 'Shift+click: choose instance or tab · Ctrl+click: close all instances' });
 		}
+		close.querySelector(':scope > .scope-tabs-book-subtree-close-hint')?.remove();
 		if (title.textContent !== book.name) title.setText(book.name);
-		bar.setAttr('aria-label', `Close the latest ${book.name} book. Shift-click to choose an instance or tab. Ctrl-click to close every instance and tab for this book.`);
-		handle.setAttr('aria-label', `Choose a ${book.name} instance or tab to close. Drag to reorder this secondary book.`);
+		setTooltip(bar, `Close the latest ${book.name} book. Shift-click to choose an instance or tab. Ctrl-click to close every instance and tab for this book.`, { delay: 0, placement: 'bottom' });
+		setTooltip(handle, `Drag to reorder ${book.name}`, { delay: 0, placement: 'left' });
+		setTooltip(copy, `Open another ${book.name} instance`, { delay: 0, placement: 'right' });
 		bar.toggleClass('scope-tabs-book-switcher-colored', this.plugin.settings.colorBookSwitcher);
 		bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
 	}
@@ -807,17 +816,20 @@ export class DecorationController {
 	private bindClosePreview(label: HTMLElement, leaf: WorkspaceLeaf, targetKind: 'group' | 'tab'): void {
 		const hoverTarget = label.closest<HTMLElement>('.menu-item') ?? label;
 		hoverTarget.addEventListener('mouseenter', () => this.setCloseTarget(leaf, targetKind, hoverTarget.ownerDocument.defaultView));
-		hoverTarget.addEventListener('mouseleave', () => this.clearCloseTarget());
 	}
 
 	private setCloseTarget(leaf: WorkspaceLeaf, targetKind: 'group' | 'tab', sourceWindow: Window | null): void {
 		this.clearCloseTarget();
+		const restoreWindow = bringPopoutForwardForClosePreview(leaf, sourceWindow);
 		const group = getInternalTabGroupDom(leaf);
 		const target = targetKind === 'tab'
-			? getTabHeaderForLeaf(leaf)
+			? getTabHeaderForFileLeaf(leaf, group, this.plugin.app.vault)
 			: group?.containerEl ?? leaf.view.containerEl.closest<HTMLElement>('.workspace-tabs');
-		if (!target) return;
-		this.restoreClosePreviewWindow = bringPopoutForwardForClosePreview(leaf, sourceWindow);
+		if (!target) {
+			restoreWindow?.();
+			return;
+		}
+		this.restoreClosePreviewWindow = restoreWindow;
 		target.addClass('scope-tabs-close-target');
 		this.closeTargetEl = target;
 	}
@@ -1122,15 +1134,24 @@ function getTabHeaderForLeaf(leaf: WorkspaceLeaf): HTMLElement | null {
 	}
 	const group = getInternalTabGroupDom(leaf);
 	if (!group) return null;
-	const liveChildren = group.children.filter((candidate) => {
-		if (!candidate.view.containerEl.isConnected) return false;
-		return candidate.view.containerEl.closest<HTMLElement>('.workspace-tabs') === group.containerEl;
-	});
+	const liveChildren = group.children.filter((candidate) => candidate.view.containerEl.isConnected);
 	const index = liveChildren.indexOf(leaf);
 	if (index < 0) return null;
 	return group.containerEl
 		.querySelectorAll<HTMLElement>('.workspace-tab-header-container-inner > .workspace-tab-header')
 		.item(index);
+}
+
+function getTabHeaderForFileLeaf(leaf: WorkspaceLeaf, group: InternalTabGroupDom | null, vault: Vault): HTMLElement | null {
+	const indexedHeader = getTabHeaderForLeaf(leaf);
+	const file = getLeafFile(leaf, vault);
+	if (!group || !file) return indexedHeader;
+	const headers = group.containerEl.querySelectorAll<HTMLElement>('.workspace-tab-header-container-inner .workspace-tab-header');
+	for (const header of Array.from(headers)) {
+		const title = header.querySelector<HTMLElement>('.workspace-tab-header-inner-title')?.textContent?.trim();
+		if (title === file.basename) return header;
+	}
+	return indexedHeader;
 }
 
 function getTabHeaderHost(leaf: WorkspaceLeaf, group: InternalTabGroupDom | null): HTMLElement | null {
@@ -1145,7 +1166,11 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isWorkspaceLeafArray(value: unknown): value is WorkspaceLeaf[] {
-	return Array.isArray(value) && value.every((item: unknown) => item instanceof WorkspaceLeaf);
+	return Array.isArray(value) && value.every((item: unknown) => {
+		if (!isUnknownRecord(item) || typeof item.getViewState !== 'function' || typeof item.detach !== 'function') return false;
+		const view = item.view;
+		return isUnknownRecord(view) && 'containerEl' in view;
+	});
 }
 
 function isHtmlElement(value: unknown, document: Document): value is HTMLElement {
@@ -1201,7 +1226,10 @@ function getAlwaysOnTopCompatibility(leaf: WorkspaceLeaf): AlwaysOnTopCompatibil
 function bringPopoutForwardForClosePreview(leaf: WorkspaceLeaf, sourceWindow: Window | null): (() => void) | null {
 	const targetWindow = leaf.view.containerEl.ownerDocument.defaultView;
 	if (!targetWindow || targetWindow === sourceWindow) return null;
-	const browserWindow = getElectronWindow(targetWindow);
+	const root: unknown = leaf.getRoot();
+	const rootWindow = isUnknownRecord(root) ? root.win : undefined;
+	const browserWindow = getElectronWindow(targetWindow)
+		?? (isUnknownRecord(rootWindow) ? rootWindow.electronWindow : undefined);
 	if (!isUnknownRecord(browserWindow)) return null;
 	const previousFrontWindow = getElectronWindow(sourceWindow);
 	const showInactive = browserWindow.showInactive;

@@ -191,19 +191,43 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 	justify-content: center;
 	flex: 0 0 calc(var(--size-4-8) + var(--size-4-1));
 	padding: var(--size-4-2);
-	border: 1px solid color-mix(in srgb, var(--text-error) 48%, var(--background-modifier-border));
+	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-s);
-	background: color-mix(in srgb, var(--text-error) 7%, var(--background-secondary));
-	color: color-mix(in srgb, var(--text-error) 76%, var(--text-muted));
+	background: var(--background-secondary);
+	color: var(--text-muted);
 	cursor: grab;
 	touch-action: none;
 	user-select: none;
 }
 
 .scope-tabs-book-subtree-handle:hover {
-	border-color: var(--text-error);
-	background: color-mix(in srgb, var(--text-error) 18%, var(--background-secondary));
-	color: var(--text-error);
+	border-color: var(--background-modifier-border-hover);
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.scope-tabs-book-subtree-divider {
+	align-self: center;
+	width: 1px;
+	height: calc(100% - var(--size-4-2));
+	background: var(--background-modifier-border);
+}
+
+.scope-tabs-book-subtree-copy {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 var(--size-4-8);
+	padding: var(--size-4-2);
+	border: 0;
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-muted);
+}
+
+.scope-tabs-book-subtree-copy:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
 }
 
 .scope-tabs-book-subtree-handle:active,
@@ -244,15 +268,6 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 
 .scope-tabs-book-subtree-close {
 	align-items: center;
-	flex-direction: column;
-	gap: 1px;
-}
-
-.scope-tabs-book-subtree-close-hint {
-	font-size: var(--font-ui-smaller);
-	font-weight: var(--font-normal);
-	line-height: var(--line-height-tight);
-	opacity: 0.78;
 }
 
 .scope-tabs-book-subtree-bar.scope-tabs-book-switcher-colored {
