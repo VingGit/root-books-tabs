@@ -135,6 +135,17 @@ export class BookNavigationController {
 		return this.syncBookOrder();
 	}
 
+	reorderSecondaryBook(bookId: string, targetBookId: string, placement: 'before' | 'after'): void {
+		if (bookId === targetBookId || bookId === this.plugin.settings.selectedBookId || targetBookId === this.plugin.settings.selectedBookId) return;
+		const current = this.syncBookOrder();
+		if (!current.includes(bookId) || !current.includes(targetBookId)) return;
+		const next = current.filter((id) => id !== bookId);
+		const targetIndex = next.indexOf(targetBookId);
+		if (targetIndex < 0) return;
+		next.splice(targetIndex + (placement === 'after' ? 1 : 0), 0, bookId);
+		this.persistBookOrder(next);
+	}
+
 	setPrimaryBook(bookId: string): void {
 		const books = new Set(this.plugin.scopeResolver.listBooks().map((book) => book.id));
 		if (!books.has(bookId)) return;
@@ -207,6 +218,14 @@ export class BookNavigationController {
 			return;
 		}
 		for (const leaf of instances) this.closeBookGroupInstance(book, leaf);
+	}
+
+	closeAllSecondaryBooks(primaryBookId: string): void {
+		const openBookIds = this.getOpenBookIds();
+		for (const book of this.plugin.scopeResolver.listBooks()) {
+			if (book.id !== primaryBookId && openBookIds.has(book.id)) this.closeAllBookGroups(book);
+		}
+		this.syncBookOrder();
 	}
 
 	closeLatestBookGroup(book: BookScope): void {

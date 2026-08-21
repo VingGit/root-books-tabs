@@ -161,12 +161,21 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 	color: var(--scope-tabs-book-color);
 }
 
+.scope-tabs-book-subtree-controls {
+	position: relative;
+	display: flex;
+	align-items: stretch;
+	gap: var(--size-4-1);
+	width: calc(100% - var(--size-4-4));
+	margin: var(--size-4-2);
+}
+
 .scope-tabs-book-subtree-bar {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: calc(100% - var(--size-4-4));
-	margin: var(--size-4-2);
+	flex: 1 1 auto;
+	min-width: 0;
 	padding: var(--size-4-2) var(--size-4-3);
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-s);
@@ -174,6 +183,55 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 	color: var(--text-normal);
 	font-weight: var(--font-semibold);
 	text-align: left;
+}
+
+.scope-tabs-book-subtree-handle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 calc(var(--size-4-8) + var(--size-4-1));
+	padding: var(--size-4-2);
+	border: 1px solid color-mix(in srgb, var(--text-error) 48%, var(--background-modifier-border));
+	border-radius: var(--radius-s);
+	background: color-mix(in srgb, var(--text-error) 7%, var(--background-secondary));
+	color: color-mix(in srgb, var(--text-error) 76%, var(--text-muted));
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
+}
+
+.scope-tabs-book-subtree-handle:hover {
+	border-color: var(--text-error);
+	background: color-mix(in srgb, var(--text-error) 18%, var(--background-secondary));
+	color: var(--text-error);
+}
+
+.scope-tabs-book-subtree-handle:active,
+.scope-tabs-book-subtree-dragging .scope-tabs-book-subtree-handle {
+	cursor: grabbing;
+}
+
+.scope-tabs-book-subtree-dragging {
+	opacity: 0.55;
+}
+
+.scope-tabs-book-subtree-drop-before::before,
+.scope-tabs-book-subtree-drop-after::after {
+	position: absolute;
+	right: 0;
+	left: 0;
+	height: 2px;
+	border-radius: 2px;
+	background: var(--interactive-accent);
+	content: "";
+}
+
+.scope-tabs-book-subtree-drop-before::before {
+	top: calc(var(--size-4-2) * -1);
+}
+
+.scope-tabs-book-subtree-drop-after::after {
+	bottom: calc(var(--size-4-2) * -1);
 }
 
 .scope-tabs-book-subtree-close {
@@ -232,11 +290,21 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 body .workspace-tabs.scope-tabs-close-target,
 body .workspace-tab-header.scope-tabs-close-target,
 body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
-	background: color-mix(in srgb, var(--text-error) 18%, transparent);
-	box-shadow: inset 0 0 0 2px var(--text-error);
-	filter: saturate(0.45);
-	opacity: 0.55;
-	transition: background 100ms ease, box-shadow 100ms ease, filter 100ms ease, opacity 100ms ease;
+	outline: 3px solid var(--text-error);
+	outline-offset: -3px;
+	background: color-mix(in srgb, var(--text-error) 28%, transparent);
+	box-shadow: inset 0 0 0 3px var(--text-error);
+	filter: saturate(0.55);
+	opacity: 0.72;
+	transition: background 100ms ease, box-shadow 100ms ease, filter 100ms ease, opacity 100ms ease, outline 100ms ease;
+}
+
+.scope-tabs-book-actions {
+	display: flex;
+	align-items: stretch;
+	gap: var(--size-4-1);
+	width: calc(100% - var(--size-4-4));
+	margin: var(--size-4-2);
 }
 
 .scope-tabs-open-book-button {
@@ -244,9 +312,9 @@ body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	flex: 0 0 auto;
-	width: calc(100% - var(--size-4-4));
-	margin: var(--size-4-2);
+	flex: 1 1 auto;
+	min-width: 0;
+	margin: 0;
 	padding: var(--size-4-2) var(--size-4-3);
 	border: 1px dashed var(--background-modifier-border);
 	border-radius: var(--radius-s);
@@ -256,6 +324,28 @@ body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
 	line-height: var(--line-height-tight);
 	text-align: center;
 	white-space: normal;
+}
+
+.scope-tabs-close-all-books-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	padding: var(--size-4-2) var(--size-4-3);
+	border: 1px solid color-mix(in srgb, var(--text-error) 58%, var(--background-modifier-border));
+	border-radius: var(--radius-s);
+	background: color-mix(in srgb, var(--text-error) 9%, transparent);
+	color: var(--text-error);
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	line-height: var(--line-height-tight);
+	white-space: nowrap;
+}
+
+.scope-tabs-close-all-books-button:hover {
+	border-color: var(--text-error);
+	background: color-mix(in srgb, var(--text-error) 22%, var(--background-secondary));
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-error) 40%, transparent);
 }
 
 .scope-tabs-open-book-hover {

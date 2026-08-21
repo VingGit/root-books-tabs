@@ -14,11 +14,13 @@ interface InternalTabGroupDom {
 interface ExplorerDecoration {
 	observer: MutationObserver;
 	actions: HTMLElement;
+	bookActions: HTMLElement;
 	files: HTMLElement;
 	filesParent: HTMLElement;
 	modelReady: boolean;
 	toggle: HTMLElement;
 	bar: HTMLElement;
+	closeAll: HTMLElement;
 	openAnother: HTMLElement;
 }
 
@@ -58,6 +60,9 @@ export class DecorationController {
 	private bookGroupDrag: BookGroupDrag | null = null;
 	private bookDropTargetEl: HTMLElement | null = null;
 	private bookButtonLongPressCancels = new Set<() => void>();
+	private explorerBookDragId: string | null = null;
+	private explorerBookDropTargetEl: HTMLElement | null = null;
+	private explorerBookHandleDragged = false;
 	private sortingTabs = false;
 
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
@@ -89,6 +94,7 @@ export class DecorationController {
 		this.clearCloseTarget();
 		this.clearBookGroupDrag();
 		this.clearBookButtonLongPresses();
+		this.clearExplorerBookDrag();
 		for (const removeListeners of this.bookDragDocuments.values()) removeListeners();
 		this.bookDragDocuments.clear();
 		const docs = new Set<Document>([...this.getWorkspaceDocuments(), ...this.customStyleSheets.keys()]);
@@ -98,7 +104,7 @@ export class DecorationController {
 		}
 		this.customStyleSheets.clear();
 		for (const doc of docs) {
-			doc.querySelectorAll('.scope-tabs-book-menu-tab, .scope-tabs-book-mode-toggle, .scope-tabs-book-switcher, .scope-tabs-book-subtree-bar, .scope-tabs-open-book-button').forEach((el) => el.remove());
+			doc.querySelectorAll('.scope-tabs-book-menu-tab, .scope-tabs-book-mode-toggle, .scope-tabs-book-switcher, .scope-tabs-book-subtree-controls, .scope-tabs-book-actions').forEach((el) => el.remove());
 			doc.querySelectorAll<HTMLElement>('.scope-tabs-book-label, .scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary, .scope-tabs-book-root-title-hidden').forEach((el) => {
 				if (el.hasClass('scope-tabs-book-label')) el.remove();
 				else {
@@ -465,14 +471,14 @@ export class DecorationController {
 			item.style.removeProperty('order');
 			item.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary']);
 			item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.removeClass('scope-tabs-book-root-title-hidden');
-			item.querySelector(':scope > .scope-tabs-book-subtree-bar')?.remove();
+			item.querySelector(':scope > .scope-tabs-book-subtree-controls')?.remove();
 		}
-		root.querySelectorAll('.scope-tabs-book-subtree-bar').forEach((bar) => bar.remove());
+		root.querySelectorAll('.scope-tabs-book-subtree-controls').forEach((controls) => controls.remove());
 		if (restoreOrder) tree?.restoreOrder();
 		tree?.invalidate();
 		decoration.toggle.remove();
 		decoration.bar.remove();
-		decoration.openAnother.remove();
+		decoration.bookActions.remove();
 		root.removeClass('scope-tabs-book-mode');
 		this.explorerDecorations.delete(root);
 	}
@@ -500,16 +506,29 @@ export class DecorationController {
 			});
 			filesParent.insertBefore(bar, files);
 			bar.addEventListener('click', (event: MouseEvent) => this.showBookSwitcher(event));
-			const openAnother = filesParent.createEl('button', {
+			const bookActions = filesParent.createDiv({ cls: 'scope-tabs-book-actions' });
+			filesParent.insertBefore(bookActions, files);
+			const openAnother = bookActions.createEl('button', {
 				cls: 'scope-tabs-open-book-button',
 				attr: { type: 'button', 'aria-haspopup': 'menu', 'aria-label': 'Open another book' },
 			});
-			filesParent.insertBefore(openAnother, files);
 			openAnother.createSpan({ cls: 'scope-tabs-open-book-default', text: '+ Open another book' });
 			openAnother.createSpan({ cls: 'scope-tabs-open-book-hover', text: 'Shift-click opens another book in a pop-out window instead.' });
 			openAnother.addEventListener('click', (event: MouseEvent) => {
 				event.stopPropagation();
 				this.showOpenAnotherMenu(event, event.shiftKey);
+			});
+			const closeAll = bookActions.createEl('button', {
+				cls: 'scope-tabs-close-all-books-button',
+				text: 'Close all',
+				attr: { type: 'button', 'aria-label': 'Close every secondary book while keeping the selected book open' },
+			});
+			closeAll.addEventListener('click', (event: MouseEvent) => {
+				event.stopPropagation();
+				const primaryBookId = this.plugin.settings.selectedBookId;
+				if (!primaryBookId) return;
+				this.plugin.navigation.closeAllSecondaryBooks(primaryBookId);
+				this.queueExplorerRefresh();
 			});
 			const observer = new MutationObserver(() => {
 				const current = this.explorerDecorations.get(root);
@@ -519,7 +538,7 @@ export class DecorationController {
 				if (liveActions !== current.actions || liveFiles !== current.files || !current.modelReady) this.queueExplorerRefresh();
 			});
 			observer.observe(root, { childList: true });
-			decoration = { observer, actions, files, filesParent, modelReady: false, toggle, bar, openAnother };
+			decoration = { observer, actions, bookActions, files, filesParent, modelReady: false, toggle, bar, closeAll, openAnother };
 			this.explorerDecorations.set(root, decoration);
 			window.setTimeout(() => {
 				const current = this.explorerDecorations.get(root);
@@ -565,17 +584,17 @@ export class DecorationController {
 		if (this.plugin.settings.bookModeEnabled && !tree) {
 			root.removeClass('scope-tabs-book-mode');
 			decoration.bar.toggle(false);
-			decoration.openAnother.toggle(false);
-			root.querySelectorAll('.scope-tabs-book-subtree-bar').forEach((bar) => bar.remove());
+			decoration.bookActions.toggle(false);
+			root.querySelectorAll('.scope-tabs-book-subtree-controls').forEach((controls) => controls.remove());
 			return;
 		}
 		if (!this.plugin.settings.bookModeEnabled) {
-			for (const item of rootItems.values()) item.querySelector(':scope > .scope-tabs-book-subtree-bar')?.remove();
+			for (const item of rootItems.values()) item.querySelector(':scope > .scope-tabs-book-subtree-controls')?.remove();
 			tree?.restoreOrder();
 			tree?.invalidate();
-			decoration.openAnother.remove();
-			decoration.filesParent.insertBefore(decoration.openAnother, decoration.files);
-			decoration.openAnother.toggle(false);
+			decoration.bookActions.remove();
+			decoration.filesParent.insertBefore(decoration.bookActions, decoration.files);
+			decoration.bookActions.toggle(false);
 			return;
 		}
 		const secondaryPaths = bookOrder.filter((id) => id !== selected.id && openBookIds.has(id));
@@ -585,10 +604,10 @@ export class DecorationController {
 		tree?.reorder([selected.id, ...secondaryPaths]);
 		let selectedItem: HTMLElement | null = null;
 		for (const [path, item] of rootItems) {
-			const subtreeBar = item.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-bar');
+			const subtreeControls = item.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-controls');
 			if (path === selected.folderPath && item.hasClass('nav-folder')) {
 				selectedItem = item;
-				subtreeBar?.remove();
+				subtreeControls?.remove();
 				item.addClass('scope-tabs-book-mode-selected');
 				item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.addClass('scope-tabs-book-root-title-hidden');
 				tree?.itemsByPath.get(path)?.expand();
@@ -598,34 +617,45 @@ export class DecorationController {
 				item.addClass('scope-tabs-book-mode-secondary');
 				item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.addClass('scope-tabs-book-root-title-hidden');
 				tree?.itemsByPath.get(path)?.expand();
-				this.ensureSubtreeBar(item, book);
+				this.ensureSubtreeControls(item, book);
 			} else {
-				subtreeBar?.remove();
+				subtreeControls?.remove();
 				item.addClass('scope-tabs-book-mode-hidden');
 			}
 		}
 		const showOpenAnother = books.some((book) => !visibleBookIds.has(book.id));
+		const showCloseAll = secondaryPaths.length > 0;
 		if (selectedItem) {
-			if (selectedItem.lastElementChild !== decoration.openAnother) selectedItem.appendChild(decoration.openAnother);
+			if (selectedItem.lastElementChild !== decoration.bookActions) selectedItem.appendChild(decoration.bookActions);
 			decoration.openAnother.toggle(showOpenAnother);
+			decoration.closeAll.toggle(showCloseAll);
+			decoration.bookActions.toggle(showOpenAnother || showCloseAll);
 		} else {
-			decoration.openAnother.toggle(false);
+			decoration.bookActions.toggle(false);
 		}
 		tree?.invalidate();
 	}
 
-	private ensureSubtreeBar(folder: HTMLElement, book: BookScope): void {
-		let bar = folder.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-bar');
-		if (!bar) {
-			bar = folder.createEl('button', {
+	private ensureSubtreeControls(folder: HTMLElement, book: BookScope): void {
+		let controls = folder.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-controls');
+		if (!controls) {
+			folder.querySelector(':scope > .scope-tabs-book-subtree-bar')?.remove();
+			controls = folder.createDiv({ cls: 'scope-tabs-book-subtree-controls' });
+			const controlsEl = controls;
+			const handle = controlsEl.createEl('button', {
+				cls: 'scope-tabs-book-subtree-handle',
+				attr: { type: 'button' },
+			});
+			setIcon(handle, 'list-tree');
+			const bar = controlsEl.createEl('button', {
 				cls: 'scope-tabs-book-subtree-bar',
 				attr: { type: 'button' },
 			});
 			const children = folder.querySelector<HTMLElement>(':scope > .nav-folder-children');
-			if (children) folder.insertBefore(bar, children);
+			if (children) folder.insertBefore(controls, children);
 			bar.addEventListener('click', (event: MouseEvent) => {
 				event.stopPropagation();
-				const id = bar?.dataset.bookId;
+				const id = controls?.dataset.bookId;
 				const currentBook = this.plugin.scopeResolver.listBooks().find((candidate) => candidate.id === id);
 				if (!currentBook) return;
 				if (event.ctrlKey) {
@@ -638,8 +668,63 @@ export class DecorationController {
 				}
 				this.plugin.navigation.closeLatestBookGroup(currentBook);
 			});
+			handle.addEventListener('click', (event: MouseEvent) => {
+				event.stopPropagation();
+				if (this.explorerBookHandleDragged) return;
+				const id = controls?.dataset.bookId;
+				const currentBook = this.plugin.scopeResolver.listBooks().find((candidate) => candidate.id === id);
+				if (currentBook) this.showBookInstancePicker(event, currentBook);
+			});
+			let pointerDrag: { pointerId: number; startX: number; startY: number; dragging: boolean } | null = null;
+			handle.addEventListener('pointerdown', (event: PointerEvent) => {
+				if (event.button !== 0 || !controlsEl.dataset.bookId) return;
+				pointerDrag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, dragging: false };
+				handle.setPointerCapture(event.pointerId);
+			});
+			handle.addEventListener('pointermove', (event: PointerEvent) => {
+				const drag = pointerDrag;
+				if (!drag || drag.pointerId !== event.pointerId) return;
+				if (!drag.dragging && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+				if (!drag.dragging) {
+					drag.dragging = true;
+					this.explorerBookDragId = controlsEl.dataset.bookId ?? null;
+					this.explorerBookHandleDragged = true;
+					controlsEl.addClass('scope-tabs-book-subtree-dragging');
+				}
+				event.preventDefault();
+				const target = controlsEl.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.scope-tabs-book-subtree-controls');
+				if (target && target !== controlsEl) this.setExplorerBookDropTarget(target, event.clientY);
+				else this.clearExplorerBookDropTarget();
+			});
+			const finishPointerDrag = (event: PointerEvent, cancelled: boolean): void => {
+				const drag = pointerDrag;
+				if (!drag || drag.pointerId !== event.pointerId) return;
+				const dragged = drag.dragging;
+				let reordered = false;
+				if (dragged && !cancelled) {
+					const target = controlsEl.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.scope-tabs-book-subtree-controls');
+					const sourceId = controlsEl.dataset.bookId;
+					const targetId = target?.dataset.bookId;
+					if (target && target !== controlsEl && sourceId && targetId) {
+						const rect = target.getBoundingClientRect();
+						const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+						this.plugin.navigation.reorderSecondaryBook(sourceId, targetId, placement);
+						reordered = true;
+					}
+				}
+				if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+				pointerDrag = null;
+				this.clearExplorerBookDrag();
+				if (reordered) this.queueExplorerRefresh();
+				if (dragged) window.setTimeout(() => { this.explorerBookHandleDragged = false; }, 0);
+			};
+			handle.addEventListener('pointerup', (event: PointerEvent) => finishPointerDrag(event, false));
+			handle.addEventListener('pointercancel', (event: PointerEvent) => finishPointerDrag(event, true));
 		}
-		bar.dataset.bookId = book.id;
+		controls.dataset.bookId = book.id;
+		const handle = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-handle');
+		const bar = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-bar');
+		if (!bar || !handle) return;
 		let title = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-title');
 		let close = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-close');
 		if (!title) title = bar.createSpan({ cls: 'scope-tabs-book-subtree-title' });
@@ -650,6 +735,7 @@ export class DecorationController {
 		}
 		if (title.textContent !== book.name) title.setText(book.name);
 		bar.setAttr('aria-label', `Close the latest ${book.name} book. Shift-click to choose an instance or tab. Ctrl-click to close every instance and tab for this book.`);
+		handle.setAttr('aria-label', `Choose a ${book.name} instance or tab to close. Drag to reorder this secondary book.`);
 		bar.toggleClass('scope-tabs-book-switcher-colored', this.plugin.settings.colorBookSwitcher);
 		bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
 	}
@@ -660,6 +746,7 @@ export class DecorationController {
 		if (this.instancePickerBookId === book.id) return true;
 		this.instancePickerMenu?.hide();
 		const menu = new Menu();
+		const previewBindings: Array<{ label: HTMLElement; leaf: WorkspaceLeaf; targetKind: 'group' | 'tab' }> = [];
 		this.instancePickerMenu = menu;
 		this.instancePickerBookId = book.id;
 		menu.addItem((item) => item.setTitle(book.name).setIcon('book-open').setIsLabel(true));
@@ -680,10 +767,10 @@ export class DecorationController {
 						this.clearCloseTarget();
 						this.plugin.navigation.closeBookGroupInstance(book, leaf);
 					});
-				this.bindClosePreview(label, leaf, 'group');
+				previewBindings.push({ label, leaf, targetKind: 'group' });
 			});
 
-			for (const child of getInternalTabGroupDom(leaf)?.children ?? [leaf]) {
+			for (const child of this.plugin.navigation.getGroupLeaves(leaf)) {
 				const childFile = getLeafFile(child, this.plugin.app.vault);
 				if (!childFile || this.plugin.scopeResolver.resolveFile(childFile)?.id !== book.id) continue;
 				const tabTitle = createFragment();
@@ -700,7 +787,7 @@ export class DecorationController {
 							this.clearCloseTarget();
 							this.plugin.navigation.closeBookTab(child);
 						});
-					this.bindClosePreview(tabLabel, child, 'tab');
+					previewBindings.push({ label: tabLabel, leaf: child, targetKind: 'tab' });
 				});
 			}
 			if (index < instances.length - 1) menu.addSeparator();
@@ -713,6 +800,7 @@ export class DecorationController {
 			this.clearCloseTarget();
 		});
 		menu.showAtMouseEvent(event);
+		for (const binding of previewBindings) this.bindClosePreview(binding.label, binding.leaf, binding.targetKind);
 		return true;
 	}
 
@@ -729,9 +817,30 @@ export class DecorationController {
 			? getTabHeaderForLeaf(leaf)
 			: group?.containerEl ?? leaf.view.containerEl.closest<HTMLElement>('.workspace-tabs');
 		if (!target) return;
+		this.restoreClosePreviewWindow = bringPopoutForwardForClosePreview(leaf, sourceWindow);
 		target.addClass('scope-tabs-close-target');
 		this.closeTargetEl = target;
-		this.restoreClosePreviewWindow = bringPopoutForwardForClosePreview(leaf, sourceWindow);
+	}
+
+	private setExplorerBookDropTarget(target: HTMLElement, clientY: number): void {
+		if (this.explorerBookDropTargetEl && this.explorerBookDropTargetEl !== target) {
+			this.explorerBookDropTargetEl.removeClasses(['scope-tabs-book-subtree-drop-before', 'scope-tabs-book-subtree-drop-after']);
+		}
+		const rect = target.getBoundingClientRect();
+		target.toggleClass('scope-tabs-book-subtree-drop-before', clientY < rect.top + rect.height / 2);
+		target.toggleClass('scope-tabs-book-subtree-drop-after', clientY >= rect.top + rect.height / 2);
+		this.explorerBookDropTargetEl = target;
+	}
+
+	private clearExplorerBookDropTarget(): void {
+		this.explorerBookDropTargetEl?.removeClasses(['scope-tabs-book-subtree-drop-before', 'scope-tabs-book-subtree-drop-after']);
+		this.explorerBookDropTargetEl = null;
+	}
+
+	private clearExplorerBookDrag(): void {
+		this.clearExplorerBookDropTarget();
+		for (const doc of this.getWorkspaceDocuments()) doc.querySelectorAll<HTMLElement>('.scope-tabs-book-subtree-dragging').forEach((el) => el.removeClass('scope-tabs-book-subtree-dragging'));
+		this.explorerBookDragId = null;
 	}
 
 	private clearCloseTarget(): void {
