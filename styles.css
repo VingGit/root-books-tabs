@@ -204,6 +204,54 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 	color: var(--text-normal);
 }
 
+.scope-tabs-book-subtree-reorder {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 var(--size-4-6);
+	padding: var(--size-4-1);
+	border: 0;
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-faint);
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
+}
+
+.scope-tabs-book-subtree-reorder:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+}
+
+.scope-tabs-book-subtree-reorder:active,
+.scope-tabs-book-subtree-dragging .scope-tabs-book-subtree-reorder {
+	cursor: grabbing;
+}
+
+.scope-tabs-book-subtree-dragging {
+	opacity: 0.55;
+}
+
+.scope-tabs-book-subtree-drop-before::before,
+.scope-tabs-book-subtree-drop-after::after {
+	position: absolute;
+	right: 0;
+	left: 0;
+	height: 2px;
+	border-radius: 2px;
+	background: var(--interactive-accent);
+	content: "";
+}
+
+.scope-tabs-book-subtree-drop-before::before {
+	top: calc(var(--size-4-2) * -1);
+}
+
+.scope-tabs-book-subtree-drop-after::after {
+	bottom: calc(var(--size-4-2) * -1);
+}
+
 .scope-tabs-book-subtree-divider {
 	align-self: center;
 	width: 1px;

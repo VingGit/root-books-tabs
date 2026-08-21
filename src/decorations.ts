@@ -62,6 +62,7 @@ export class DecorationController {
 	private bookDropTargetEl: HTMLElement | null = null;
 	private bookButtonLongPressCancels = new Set<() => void>();
 	private collapsedSecondaryBookIds = new Set<string>();
+	private explorerBookDropTargetEl: HTMLElement | null = null;
 	private sortingTabs = false;
 
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
@@ -93,6 +94,7 @@ export class DecorationController {
 		this.clearCloseTarget();
 		this.clearBookGroupDrag();
 		this.clearBookButtonLongPresses();
+		this.clearExplorerBookDrag();
 		this.collapsedSecondaryBookIds.clear();
 		for (const removeListeners of this.bookDragDocuments.values()) removeListeners();
 		this.bookDragDocuments.clear();
@@ -647,6 +649,11 @@ export class DecorationController {
 				cls: 'scope-tabs-book-subtree-handle',
 				attr: { type: 'button' },
 			});
+			const reorder = controlsEl.createEl('button', {
+				cls: 'scope-tabs-book-subtree-reorder',
+				attr: { type: 'button' },
+			});
+			setIcon(reorder, 'grip-vertical');
 			const bar = controlsEl.createEl('button', {
 				cls: 'scope-tabs-book-subtree-bar',
 				attr: { type: 'button' },
@@ -680,6 +687,10 @@ export class DecorationController {
 				const id = controls?.dataset.bookId;
 				if (id) this.toggleSecondaryBookSubtree(folder, id);
 			});
+			reorder.addEventListener('click', (event: MouseEvent) => {
+				event.preventDefault();
+				event.stopPropagation();
+			});
 			copy.addEventListener('click', (event: MouseEvent) => {
 				event.preventDefault();
 				event.stopPropagation();
@@ -687,12 +698,53 @@ export class DecorationController {
 				const currentBook = this.plugin.scopeResolver.listBooks().find((candidate) => candidate.id === id);
 				if (currentBook) void this.plugin.navigation.openBookCopy(currentBook);
 			});
+			let pointerDrag: { pointerId: number; startX: number; startY: number; dragging: boolean } | null = null;
+			reorder.addEventListener('pointerdown', (event: PointerEvent) => {
+				if (event.button !== 0 || !controlsEl.dataset.bookId) return;
+				pointerDrag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, dragging: false };
+				reorder.setPointerCapture(event.pointerId);
+			});
+			reorder.addEventListener('pointermove', (event: PointerEvent) => {
+				const drag = pointerDrag;
+				if (!drag || drag.pointerId !== event.pointerId) return;
+				if (!drag.dragging && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+				if (!drag.dragging) {
+					drag.dragging = true;
+					controlsEl.addClass('scope-tabs-book-subtree-dragging');
+				}
+				event.preventDefault();
+				const target = controlsEl.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.scope-tabs-book-subtree-controls');
+				if (target && target !== controlsEl) this.setExplorerBookDropTarget(target, event.clientY);
+				else this.clearExplorerBookDropTarget();
+			});
+			const finishPointerDrag = (event: PointerEvent, cancelled: boolean): void => {
+				const drag = pointerDrag;
+				if (!drag || drag.pointerId !== event.pointerId) return;
+				let reordered = false;
+				if (drag.dragging && !cancelled) {
+					const target = controlsEl.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.scope-tabs-book-subtree-controls');
+					const sourceId = controlsEl.dataset.bookId;
+					const targetId = target?.dataset.bookId;
+					if (target && target !== controlsEl && sourceId && targetId) {
+						const rect = target.getBoundingClientRect();
+						this.plugin.navigation.reorderSecondaryBook(sourceId, targetId, event.clientY < rect.top + rect.height / 2 ? 'before' : 'after');
+						reordered = true;
+					}
+				}
+				if (reorder.hasPointerCapture(event.pointerId)) reorder.releasePointerCapture(event.pointerId);
+				pointerDrag = null;
+				this.clearExplorerBookDrag();
+				if (reordered) this.queueExplorerRefresh();
+			};
+			reorder.addEventListener('pointerup', (event: PointerEvent) => finishPointerDrag(event, false));
+			reorder.addEventListener('pointercancel', (event: PointerEvent) => finishPointerDrag(event, true));
 		}
 		controls.dataset.bookId = book.id;
 		const handle = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-handle');
+		const reorder = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-reorder');
 		const bar = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-bar');
 		const copy = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-copy');
-		if (!bar || !handle || !copy) return;
+		if (!bar || !handle || !reorder || !copy) return;
 		let title = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-title');
 		let close = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-close');
 		if (!title) title = bar.createSpan({ cls: 'scope-tabs-book-subtree-title' });
@@ -707,6 +759,7 @@ export class DecorationController {
 		setTooltip(bar, `Close the latest ${book.name} book. Shift-click to choose an instance or tab. Ctrl-click to close every instance and tab for this book.`, { delay: 0, placement: 'bottom' });
 		setTooltip(handle, collapsed ? 'Expand subtree' : 'Collapse subtree', { delay: 0, placement: 'left' });
 		handle.setAttr('aria-expanded', collapsed ? 'false' : 'true');
+		setTooltip(reorder, 'Drag to reorder', { delay: 0, placement: 'left' });
 		setTooltip(copy, `Open another ${book.name} instance`, { delay: 0, placement: 'right' });
 		bar.toggleClass('scope-tabs-book-switcher-colored', this.plugin.settings.colorBookSwitcher);
 		bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
@@ -811,6 +864,26 @@ export class DecorationController {
 			break;
 		}
 		this.queueExplorerRefresh();
+	}
+
+	private setExplorerBookDropTarget(target: HTMLElement, clientY: number): void {
+		if (this.explorerBookDropTargetEl && this.explorerBookDropTargetEl !== target) {
+			this.explorerBookDropTargetEl.removeClasses(['scope-tabs-book-subtree-drop-before', 'scope-tabs-book-subtree-drop-after']);
+		}
+		const rect = target.getBoundingClientRect();
+		target.toggleClass('scope-tabs-book-subtree-drop-before', clientY < rect.top + rect.height / 2);
+		target.toggleClass('scope-tabs-book-subtree-drop-after', clientY >= rect.top + rect.height / 2);
+		this.explorerBookDropTargetEl = target;
+	}
+
+	private clearExplorerBookDropTarget(): void {
+		this.explorerBookDropTargetEl?.removeClasses(['scope-tabs-book-subtree-drop-before', 'scope-tabs-book-subtree-drop-after']);
+		this.explorerBookDropTargetEl = null;
+	}
+
+	private clearExplorerBookDrag(): void {
+		this.clearExplorerBookDropTarget();
+		for (const doc of this.getWorkspaceDocuments()) doc.querySelectorAll<HTMLElement>('.scope-tabs-book-subtree-dragging').forEach((el) => el.removeClass('scope-tabs-book-subtree-dragging'));
 	}
 
 	private clearCloseTarget(): void {
