@@ -17,6 +17,7 @@ export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 	mainBookSwitchBehavior: 'close-previous',
 	defaultStartupBookId: null,
 	defaultStartupNotePath: null,
+	fileExplorerOpenBehavior: 'book-instance',
 	colorBookSwitcher: true,
 	newNoteLocation: 'current-folder',
 	newFolderLocation: 'current-folder',
@@ -69,6 +70,9 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	settings.defaultStartupNotePath = typeof source.defaultStartupNotePath === 'string' && source.defaultStartupNotePath.length > 0
 		? source.defaultStartupNotePath
 		: null;
+	if (source.fileExplorerOpenBehavior === 'book-instance' || source.fileExplorerOpenBehavior === 'current-group') {
+		settings.fileExplorerOpenBehavior = source.fileExplorerOpenBehavior;
+	}
 	if (typeof source.colorBookSwitcher === 'boolean') settings.colorBookSwitcher = source.colorBookSwitcher;
 	else if (typeof source.colorExplorer === 'boolean') settings.colorBookSwitcher = source.colorExplorer;
 	if (source.newNoteLocation === 'current-folder' || source.newNoteLocation === 'book-root') settings.newNoteLocation = source.newNoteLocation;

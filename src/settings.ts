@@ -2,7 +2,7 @@ import { App, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, setIc
 import { isHexColor, isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
-import type { BookNoteOpenMode, BookScope, ColorMode, MainBookSwitchBehavior, ManualTabTextColor } from './types';
+import type { BookNoteOpenMode, BookScope, ColorMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor } from './types';
 
 export class ScopeTabsSettingTab extends PluginSettingTab {
 	private manualSection: HTMLElement | null = null;
@@ -87,7 +87,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		let startupNoteDropdown: DropdownComponent;
 		new Setting(containerEl)
 			.setName('Default startup book')
-			.setDesc('Open this book only when Obsidian restored no file-backed tabs or pop-outs. Existing workspace history always wins.')
+			.setDesc('Open this book only when Obsidian restored no content tabs or pop-outs. Existing workspace history always wins.')
 			.addDropdown((dropdown) => {
 				dropdown.addOption('', 'No startup default');
 				for (const book of this.scopeTabs.scopeResolver.listBooks()) dropdown.addOption(book.id, book.name);
@@ -111,6 +111,11 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 					await this.scopeTabs.saveSettings();
 				});
 			});
+		const fileExplorerOpening = new Setting(containerEl)
+			.setName('File explorer note opening')
+			.setDesc('Choose whether a file explorer note opens in the most recently opened matching book instance or in the currently focused book group.');
+		this.addFileExplorerOpenRadio(fileExplorerOpening.controlEl, 'book-instance', 'Corresponding book instance');
+		this.addFileExplorerOpenRadio(fileExplorerOpening.controlEl, 'current-group', 'Current book group');
 		new Setting(containerEl)
 			.setName('New note location')
 			.setDesc('Create a note beside the focused note, or in the root of its book. Root-level and non-note creation keeps Obsidian’s normal behavior.')
@@ -195,6 +200,20 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				this.scopeTabs.settings.openBooksInExternalWindows = value;
 				await this.scopeTabs.saveSettings();
 			}));
+	}
+
+	private addFileExplorerOpenRadio(container: HTMLElement, value: FileExplorerOpenBehavior, labelText: string): void {
+		const label = container.createEl('label', { cls: 'scope-tabs-radio-label' });
+		const input = label.createEl('input', { type: 'radio' });
+		input.name = 'scope-tabs-file-explorer-open-behavior';
+		input.value = value;
+		input.checked = this.scopeTabs.settings.fileExplorerOpenBehavior === value;
+		label.appendText(labelText);
+		input.addEventListener('change', () => {
+			if (!input.checked) return;
+			this.scopeTabs.settings.fileExplorerOpenBehavior = value;
+			void this.scopeTabs.saveSettings();
+		});
 	}
 
 	private populateStartupNoteDropdown(dropdown: DropdownComponent, bookId: string | null): void {
