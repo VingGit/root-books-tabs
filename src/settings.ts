@@ -2,7 +2,7 @@ import { App, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, setIc
 import { isHexColor, isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
-import type { BookScope, ColorMode, MainBookSwitchBehavior, ManualTabTextColor } from './types';
+import type { BookNoteOpenMode, BookScope, ColorMode, MainBookSwitchBehavior, ManualTabTextColor } from './types';
 
 export class ScopeTabsSettingTab extends PluginSettingTab {
 	private manualSection: HTMLElement | null = null;
@@ -155,6 +155,12 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 					this.scopeTabs.navigation.resetBookHistories();
 					await this.scopeTabs.saveSettings();
 				}));
+		new Setting(containerEl)
+			.setName('Per-book note opening')
+			.setDesc('Override the global note-opening mode for individual books. Books without an override follow the global setting above.')
+			.addButton((button) => button
+				.setButtonText('Configure')
+				.onClick(() => new BookNoteOpeningOverridesModal(this.app, this.scopeTabs).open()));
 		new Setting(containerEl)
 			.setName('Open new books in pop-outs')
 			.setDesc('Use an Obsidian desktop pop-out instead of a split when a book is first opened.')
@@ -361,6 +367,57 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				this.update();
 			}));
 	}
+}
+
+class BookNoteOpeningOverridesModal extends Modal {
+	private readonly draft: Record<string, BookNoteOpenMode>;
+
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin) {
+		super(app);
+		this.draft = { ...plugin.settings.bookNoteOpenModeOverrides };
+	}
+
+	onOpen(): void {
+		this.modalEl.addClass('scope-tabs-book-note-opening-modal');
+		this.contentEl.empty();
+		this.contentEl.createEl('h2', { text: 'Per-book note opening' });
+		this.contentEl.createEl('p', {
+			text: `The global mode is ${getBookNoteOpenModeLabel(this.plugin.settings.bookNoteOpenMode).toLowerCase()}. Choose “Use global” to keep a book in sync with it.`,
+		});
+		const rows = this.contentEl.createDiv({ cls: 'scope-tabs-book-note-opening-rows' });
+		for (const book of this.plugin.scopeResolver.listBooks()) {
+			new Setting(rows)
+				.setName(book.name)
+				.addDropdown((dropdown) => dropdown
+					.addOptions({
+						global: `Use global (${getBookNoteOpenModeLabel(this.plugin.settings.bookNoteOpenMode)})`,
+						'same-tab': 'Same tab',
+						'background-tab': 'New tab in background',
+						'focused-tab': 'New tab and focus',
+					})
+					.setValue(this.draft[book.id] ?? 'global')
+					.onChange((value) => {
+						if (value === 'global') delete this.draft[book.id];
+						else this.draft[book.id] = value as BookNoteOpenMode;
+					}));
+		}
+		const buttons = this.contentEl.createDiv({ cls: 'scope-tabs-modal-buttons' });
+		buttons.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+		buttons.createEl('button', { text: 'Apply', cls: 'mod-cta' }).addEventListener('click', () => void this.apply());
+	}
+
+	private async apply(): Promise<void> {
+		this.plugin.settings.bookNoteOpenModeOverrides = { ...this.draft };
+		this.plugin.navigation.resetBookHistories();
+		await this.plugin.saveSettings();
+		this.close();
+	}
+}
+
+function getBookNoteOpenModeLabel(mode: BookNoteOpenMode): string {
+	if (mode === 'same-tab') return 'Same tab';
+	if (mode === 'background-tab') return 'New tab in background';
+	return 'New tab and focus';
 }
 
 class BackgroundTabTextModal extends Modal {
