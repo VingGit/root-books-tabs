@@ -36,8 +36,11 @@ Navigating within the same first-level folder reuses the destination tab when it
 
 Settings control:
 
-- whether the new tab is inserted to the **right** or **left**;
-- whether the new tab receives focus automatically.
+- whether a new tab is inserted immediately to the **right** (default) or **left** of the current tab;
+- whether a same-book note replaces the current tab, opens in a background tab, or opens in a new focused tab;
+- optional per-book overrides for that opening mode, available both in settings and each book pseudo-tab menu.
+
+Markdown book labels include accessible back/forward buttons colored with the book color when enabled. In same-tab mode they traverse page history in the current tab; in either new-tab mode they traverse that book group's live tabs. Each main or pop-out group keeps independent history, and closed tabs are pruned before navigation.
 
 ### Different book
 
@@ -57,6 +60,12 @@ Grid exposes row and column sliders plus exact number inputs; both default to 2 
 Root Books Tabs keeps **one canonical managed tab group per book**, located either in the main workspace or a pop-out. If the requested file is already open there, its existing tab is focused; otherwise a new tab is added.
 
 The dropdown-selected book is the primary, first book in the managed-book order. New main-workspace groups are appended from the current end of that order using the configured direction. If the primary book's last tab closes, the most recently opened remaining book is promoted exactly as if it had been selected from the dropdown.
+
+Changing the main-book dropdown closes every main and pop-out instance of the previous book by default, leaving only the newly selected book plus books opened explicitly through links or **Open another book**. A compatibility radio keeps the earlier behavior where the previous book remains open.
+
+File-explorer activation has its own routing choice. The default opens a scoped file in the most recently opened matching book instance, creates a dedicated group when none exists, and raises a matching pop-out. The compatibility option routes into the currently focused book group. Both choices still honor the global/per-book same-tab, background-tab, or focused-tab mode and keep histories isolated by group. Root-level files continue to use normal Obsidian behavior.
+
+An optional default startup book and vault-relative note path are used only when Obsidian restores no content tabs or pop-outs. Any saved workspace history takes precedence, which makes the defaults suitable for a freshly cloned vault without replacing a user's later workspace.
 
 ### Explicit user windows
 
