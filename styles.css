@@ -498,6 +498,16 @@ body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
 	width: min(44rem, calc(100vw - 2rem));
 }
 
+.scope-tabs-book-note-opening-modal {
+	width: min(620px, calc(100vw - 2rem));
+}
+
+.scope-tabs-book-note-opening-rows {
+	max-height: min(55vh, 520px);
+	overflow-y: auto;
+	padding-right: 0.35rem;
+}
+
 .scope-tabs-background-text-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));

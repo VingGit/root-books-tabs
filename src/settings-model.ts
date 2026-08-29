@@ -24,6 +24,7 @@ export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 	gridColumns: 2,
 	tabInsertDirection: 'right',
 	bookNoteOpenMode: 'focused-tab',
+	bookNoteOpenModeOverrides: {},
 	openBooksInExternalWindows: false,
 };
 
@@ -80,6 +81,13 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 		settings.bookNoteOpenMode = source.bookNoteOpenMode;
 	} else if (typeof source.focusNewTabs === 'boolean') {
 		settings.bookNoteOpenMode = source.focusNewTabs ? 'focused-tab' : 'background-tab';
+	}
+	if (isRecord(source.bookNoteOpenModeOverrides)) {
+		for (const [bookId, mode] of Object.entries(source.bookNoteOpenModeOverrides)) {
+			if (mode === 'same-tab' || mode === 'background-tab' || mode === 'focused-tab') {
+				settings.bookNoteOpenModeOverrides[bookId] = mode;
+			}
+		}
 	}
 	copyBoolean(source, settings, 'openBooksInExternalWindows');
 	return settings;

@@ -1,7 +1,7 @@
 import { MarkdownView, Menu, Notice, WorkspaceLeaf, WorkspaceWindow, setIcon, setTooltip, type Vault } from 'obsidian';
 import { getLeafFile } from './leaf-file';
 import type ScopeTabsPlugin from './main';
-import type { BookScope, CardinalDirection } from './types';
+import type { BookNoteOpenMode, BookScope, CardinalDirection } from './types';
 
 type BookDropDirection = CardinalDirection;
 
@@ -241,7 +241,6 @@ export class DecorationController {
 				cls: 'scope-tabs-book-menu-tab clickable-icon',
 				attr: {
 					'aria-label': `Book menu and group drag handle for ${book.name}. Long press to sort all tabs by book.`,
-					title: `Book menu for ${book.name}. Drag to move the whole book group; long press to sort all tabs by book.`,
 					type: 'button',
 					draggable: 'true',
 				},
@@ -414,6 +413,13 @@ export class DecorationController {
 	private showBookGroupMenu(event: MouseEvent, leaf: WorkspaceLeaf, book: BookScope): void {
 		const menu = new Menu();
 		menu.addItem((item) => item.setTitle(book.name).setIcon('book-open').setDisabled(true));
+		menu.addItem((item) => item.setTitle('Note opening').setIcon('arrow-left-right').setDisabled(true));
+		const override = this.plugin.settings.bookNoteOpenModeOverrides[book.id] ?? null;
+		const globalLabel = getBookNoteOpenModeLabel(this.plugin.settings.bookNoteOpenMode);
+		this.addBookNoteOpenModeItem(menu, book, null, `Use global (${globalLabel})`, override === null);
+		this.addBookNoteOpenModeItem(menu, book, 'same-tab', 'Same tab', override === 'same-tab');
+		this.addBookNoteOpenModeItem(menu, book, 'background-tab', 'New tab in background', override === 'background-tab');
+		this.addBookNoteOpenModeItem(menu, book, 'focused-tab', 'New tab and focus', override === 'focused-tab');
 		menu.addSeparator();
 		if (this.plugin.navigation.getGroupLocation(leaf) === 'popout') {
 			const alwaysOnTop = getAlwaysOnTopCompatibility(leaf);
@@ -440,6 +446,24 @@ export class DecorationController {
 		menu.addSeparator();
 		menu.addItem((item) => item.setTitle('Close book').setIcon('x').setWarning(true).onClick(() => this.plugin.navigation.closeBookGroup(leaf)));
 		menu.showAtMouseEvent(event);
+	}
+
+	private addBookNoteOpenModeItem(
+		menu: Menu,
+		book: BookScope,
+		mode: BookNoteOpenMode | null,
+		title: string,
+		checked: boolean,
+	): void {
+		menu.addItem((item) => item
+			.setTitle(title)
+			.setChecked(checked)
+			.onClick(() => {
+				if (mode) this.plugin.settings.bookNoteOpenModeOverrides[book.id] = mode;
+				else delete this.plugin.settings.bookNoteOpenModeOverrides[book.id];
+				this.plugin.navigation.resetBookHistories();
+				void this.plugin.saveSettings();
+			}));
 	}
 
 	private clearBookButtonLongPresses(): void {
@@ -1066,6 +1090,12 @@ function getBookDropDirection(event: DragEvent, target: HTMLElement): BookDropDi
 	];
 	edges.sort((left, right) => left[1] - right[1]);
 	return edges[0]?.[0] ?? 'right';
+}
+
+function getBookNoteOpenModeLabel(mode: BookNoteOpenMode): string {
+	if (mode === 'same-tab') return 'Same tab';
+	if (mode === 'background-tab') return 'New tab in background';
+	return 'New tab and focus';
 }
 
 function getExplorerRootItems(root: HTMLElement): HTMLElement[] {

@@ -32,6 +32,7 @@ export interface ScopeTabsSettings {
 	gridColumns: number;
 	tabInsertDirection: TabInsertDirection;
 	bookNoteOpenMode: BookNoteOpenMode;
+	bookNoteOpenModeOverrides: Record<string, BookNoteOpenMode>;
 	openBooksInExternalWindows: boolean;
 }
 

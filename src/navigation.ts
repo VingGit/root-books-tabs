@@ -123,8 +123,8 @@ export class BookNavigationController {
 		return getLocation(leaf);
 	}
 
-	getBookNoteOpenMode(_book: BookScope): BookNoteOpenMode {
-		return this.plugin.settings.bookNoteOpenMode;
+	getBookNoteOpenMode(book: BookScope): BookNoteOpenMode {
+		return this.plugin.settings.bookNoteOpenModeOverrides[book.id] ?? this.plugin.settings.bookNoteOpenMode;
 	}
 
 	resetBookHistories(): void {
