@@ -23,6 +23,8 @@ export interface ScopeTabsSettings {
 	bookModeEnabled: boolean;
 	selectedBookId: string | null;
 	mainBookSwitchBehavior: MainBookSwitchBehavior;
+	defaultStartupBookId: string | null;
+	defaultStartupNotePath: string | null;
 	colorBookSwitcher: boolean;
 	newNoteLocation: CreationLocation;
 	newFolderLocation: CreationLocation;

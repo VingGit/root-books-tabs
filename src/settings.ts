@@ -84,6 +84,33 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 
 	private renderNavigation(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Navigation').setHeading();
+		let startupNoteDropdown: DropdownComponent;
+		new Setting(containerEl)
+			.setName('Default startup book')
+			.setDesc('Open this book only when Obsidian restored no file-backed tabs or pop-outs. Existing workspace history always wins.')
+			.addDropdown((dropdown) => {
+				dropdown.addOption('', 'No startup default');
+				for (const book of this.scopeTabs.scopeResolver.listBooks()) dropdown.addOption(book.id, book.name);
+				dropdown
+					.setValue(this.scopeTabs.settings.defaultStartupBookId ?? '')
+					.onChange(async (value) => {
+						this.scopeTabs.settings.defaultStartupBookId = value || null;
+						this.scopeTabs.settings.defaultStartupNotePath = null;
+						this.populateStartupNoteDropdown(startupNoteDropdown, value || null);
+						await this.scopeTabs.saveSettings();
+					});
+			});
+		new Setting(containerEl)
+			.setName('Default startup note')
+			.setDesc('Choose a note in the startup book, or use its normal entry note. The saved value is a vault-relative path for optional programmatic setup.')
+			.addDropdown((dropdown) => {
+				startupNoteDropdown = dropdown;
+				this.populateStartupNoteDropdown(dropdown, this.scopeTabs.settings.defaultStartupBookId);
+				dropdown.onChange(async (value) => {
+					this.scopeTabs.settings.defaultStartupNotePath = value || null;
+					await this.scopeTabs.saveSettings();
+				});
+			});
 		new Setting(containerEl)
 			.setName('New note location')
 			.setDesc('Create a note beside the focused note, or in the root of its book. Root-level and non-note creation keeps Obsidian’s normal behavior.')
@@ -168,6 +195,26 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				this.scopeTabs.settings.openBooksInExternalWindows = value;
 				await this.scopeTabs.saveSettings();
 			}));
+	}
+
+	private populateStartupNoteDropdown(dropdown: DropdownComponent, bookId: string | null): void {
+		dropdown.selectEl.empty();
+		dropdown.addOption('', 'Use the book entry note');
+		const book = this.scopeTabs.scopeResolver.listBooks().find((candidate) => candidate.id === bookId);
+		if (book) {
+			const prefix = `${book.folderPath}/`;
+			const files = this.app.vault.getMarkdownFiles()
+				.filter((file) => this.scopeTabs.scopeResolver.resolveFile(file)?.id === book.id)
+				.sort((left, right) => left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' }));
+			for (const file of files) {
+				const label = file.path.startsWith(prefix) ? file.path.slice(prefix.length).replace(/\.md$/i, '') : file.basename;
+				dropdown.addOption(file.path, label);
+			}
+		}
+		dropdown.setDisabled(!book);
+		const configured = this.scopeTabs.settings.defaultStartupNotePath;
+		const valid = book && configured && this.scopeTabs.scopeResolver.resolveFile(this.app.vault.getFileByPath(configured))?.id === book.id;
+		dropdown.setValue(valid ? configured : '');
 	}
 
 	private renderGridDimension(containerEl: HTMLElement, name: string, key: 'gridRows' | 'gridColumns'): void {

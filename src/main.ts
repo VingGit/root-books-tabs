@@ -94,8 +94,18 @@ export default class ScopeTabsPlugin extends Plugin {
 	private async initializeWorkspace(): Promise<void> {
 		if (this.unloading) return;
 		const books = this.scopeResolver.listBooks();
-		if (books.length > 1 && !books.some((book) => book.id === this.settings.selectedBookId)) {
-			this.settings.selectedBookId = books[0]?.id ?? null;
+		const restoredWorkspaceHistory = this.navigation.hasRestoredWorkspaceHistory();
+		const defaultBook = books.length > 1
+			? books.find((book) => book.id === this.settings.defaultStartupBookId) ?? null
+			: null;
+		const shouldOpenDefault = defaultBook !== null && !restoredWorkspaceHistory;
+		const selectedBookId = shouldOpenDefault
+			? defaultBook.id
+			: books.some((book) => book.id === this.settings.selectedBookId)
+				? this.settings.selectedBookId
+				: books[0]?.id ?? null;
+		if (books.length > 1 && this.settings.selectedBookId !== selectedBookId) {
+			this.settings.selectedBookId = selectedBookId;
 			await this.saveSettings();
 		}
 		if (this.unloading) return;
@@ -126,6 +136,10 @@ export default class ScopeTabsPlugin extends Plugin {
 		this.registerEvent(this.app.metadataCache.on('changed', () => {
 			if (this.settings.colorMode === 'frontmatter') this.decorations.refresh();
 		}));
+		if (shouldOpenDefault) {
+			this.navigation.setPrimaryBook(defaultBook.id);
+			await this.navigation.activateBook(defaultBook, this.resolveDefaultStartupNote(defaultBook.id));
+		}
 
 		try {
 			await this.refreshColorConfiguration(false);
@@ -134,6 +148,13 @@ export default class ScopeTabsPlugin extends Plugin {
 			console.error('Root Books Tabs could not initialize book color metadata.', error);
 			new Notice('Scope tabs navigation is active, but book color metadata could not be initialized. Check the developer console for details.');
 		}
+	}
+
+	private resolveDefaultStartupNote(bookId: string) {
+		const path = this.settings.defaultStartupNotePath;
+		if (!path) return null;
+		const file = this.app.vault.getFileByPath(path);
+		return file && this.scopeResolver.resolveFile(file)?.id === bookId ? file : null;
 	}
 
 	private async maybeNotifyMissingConfigFiles(): Promise<void> {
