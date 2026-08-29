@@ -36,11 +36,11 @@ Navigating within the same first-level folder reuses the destination tab when it
 
 Settings control:
 
-- whether a new tab is inserted immediately to the **right** (default) or **left** of the current tab;
+- whether a new tab is appended at the group's **right edge** (default) or inserted immediately **left** of the current tab;
 - whether a same-book note replaces the current tab, opens in a background tab, or opens in a new focused tab;
 - optional per-book overrides for that opening mode, available both in settings and each book pseudo-tab menu.
 
-Markdown book labels include accessible back/forward buttons colored with the book color when enabled. In same-tab mode they traverse page history in the current tab; in either new-tab mode they traverse that book group's live tabs. Each main or pop-out group keeps independent history, and closed tabs are pruned before navigation.
+Markdown book labels include accessible back/forward buttons colored with the book color when enabled. In same-tab mode they traverse page history in the current tab. In either new-tab mode they move through that book's tabs in the group's live left-to-right order. Closing, dragging, cross-book mixing, or regrouping tabs changes that order immediately, while tabs from other books are skipped. Each main, pop-out, or duplicate group remains independent.
 
 ### Different book
 
