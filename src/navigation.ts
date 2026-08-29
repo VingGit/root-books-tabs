@@ -47,6 +47,11 @@ interface BookGroupHistory {
 	mode: BookNoteOpenMode;
 }
 
+interface PendingFileExplorerOpen {
+	path: string;
+	expiresAt: number;
+}
+
 export class BookNavigationController {
 	private originalOpenFile: WorkspaceLeaf['openFile'] | null = null;
 	private patchedOpenFile: WorkspaceLeaf['openFile'] | null = null;
@@ -55,6 +60,9 @@ export class BookNavigationController {
 	private readonly popoutSnapshots = new WeakMap<WorkspaceWindow, GroupSnapshot>();
 	private readonly suppressedWindowReturns = new WeakSet<WorkspaceWindow>();
 	private bookHistories = new WeakMap<LeafParent, Map<string, BookGroupHistory>>();
+	private groupOpenOrder = new WeakMap<LeafParent, number>();
+	private groupOpenClock = 0;
+	private pendingFileExplorerOpen: PendingFileExplorerOpen | null = null;
 	private routing = false;
 	private navigatingHistory = false;
 
@@ -78,6 +86,7 @@ export class BookNavigationController {
 		this.patchedOpenFile = patched;
 		WorkspaceLeaf.prototype.openFile = patched;
 		this.restoreGroupRegistry();
+		this.observeActiveLeaf();
 	}
 
 	uninstall(): void {
@@ -86,6 +95,9 @@ export class BookNavigationController {
 		}
 		this.originalOpenFile = null;
 		this.patchedOpenFile = null;
+		this.pendingFileExplorerOpen = null;
+		this.groupOpenOrder = new WeakMap<LeafParent, number>();
+		this.groupOpenClock = 0;
 	}
 
 	isManagedGroup(leaf: WorkspaceLeaf): boolean {
@@ -111,6 +123,8 @@ export class BookNavigationController {
 			if (!representative) continue;
 			instances.push(representative);
 		}
+		instances.sort((left, right) =>
+			(this.groupOpenOrder.get(left.parent) ?? 0) - (this.groupOpenOrder.get(right.parent) ?? 0));
 		return instances;
 	}
 
@@ -130,6 +144,10 @@ export class BookNavigationController {
 	resetBookHistories(): void {
 		this.bookHistories = new WeakMap<LeafParent, Map<string, BookGroupHistory>>();
 		this.plugin.decorations.refresh();
+	}
+
+	expectFileExplorerOpen(path: string): void {
+		this.pendingFileExplorerOpen = { path, expiresAt: Date.now() + 1500 };
 	}
 
 	observeActiveLeaf(leaf: WorkspaceLeaf | null = this.plugin.app.workspace.getMostRecentLeaf()): void {
@@ -599,12 +617,19 @@ export class BookNavigationController {
 		return this.getLeavesForGroup(leaf.parent);
 	}
 
+	private consumeExpectedFileExplorerOpen(path: string): boolean {
+		const pending = this.pendingFileExplorerOpen;
+		this.pendingFileExplorerOpen = null;
+		return pending !== null && pending.expiresAt >= Date.now() && pending.path === path;
+	}
+
 	private async routeOpen(
 		destinationLeaf: WorkspaceLeaf,
 		file: TFile,
 		openState: OpenViewState | undefined,
 		original: WorkspaceLeaf['openFile'],
 	): Promise<void> {
+		const fromFileExplorer = this.consumeExpectedFileExplorerOpen(file.path);
 		const sourceLeaf = this.plugin.app.workspace.getMostRecentLeaf();
 		if (!sourceLeaf || destinationLeaf !== sourceLeaf) {
 			if (sourceLeaf && destinationLeaf.parent !== sourceLeaf.parent && !this.groupRecords.has(destinationLeaf.parent)) {
@@ -615,6 +640,9 @@ export class BookNavigationController {
 
 		const targetBook = this.plugin.scopeResolver.resolveFile(file);
 		if (!targetBook) return original.call(destinationLeaf, file, openState);
+		if (fromFileExplorer && this.plugin.settings.fileExplorerOpenBehavior === 'book-instance') {
+			return this.routeFileExplorerOpen(sourceLeaf, targetBook, file, openState, original);
+		}
 		const sourceFile = getLeafFile(sourceLeaf, this.plugin.app.vault);
 		const sourceBook = this.plugin.scopeResolver.resolveFile(sourceFile);
 		if (!sourceBook) {
@@ -654,6 +682,22 @@ export class BookNavigationController {
 		await this.openNewBookGroup(sourceLeaf, targetBook, file, openState, original);
 	}
 
+	private async routeFileExplorerOpen(
+		sourceLeaf: WorkspaceLeaf,
+		book: BookScope,
+		file: TFile,
+		openState: OpenViewState | undefined,
+		original: WorkspaceLeaf['openFile'],
+	): Promise<void> {
+		const destination = this.getLatestBookGroupInstance(book);
+		if (!destination) {
+			await this.openNewBookGroup(sourceLeaf, book, file, openState, original);
+			return;
+		}
+		await this.openOrReuseInGroup(destination, book, file, openState, original, this.getBookNoteOpenMode(book));
+		this.focusPopoutWindow(destination);
+	}
+
 	private async openOrReuseInGroup(
 		referenceLeaf: WorkspaceLeaf,
 		book: BookScope,
@@ -690,6 +734,7 @@ export class BookNavigationController {
 		}
 
 		const previous = this.plugin.app.workspace.getMostRecentLeaf();
+		const previousInGroup = this.plugin.app.workspace.getMostRecentLeaf(referenceLeaf.parent) ?? referenceLeaf;
 		this.routing = true;
 		try {
 			this.plugin.app.workspace.setActiveLeaf(referenceLeaf, { focus: false });
@@ -699,7 +744,10 @@ export class BookNavigationController {
 			this.applyTabInsertDirection(referenceLeaf, newLeaf);
 			this.recordOpenedTab(referenceLeaf, book, file.path, mode === 'focused-tab');
 			if (mode === 'focused-tab') this.focusLeaf(newLeaf);
-			else if (previous) this.plugin.app.workspace.setActiveLeaf(previous, { focus: true });
+			else {
+				this.plugin.app.workspace.setActiveLeaf(previousInGroup, { focus: false });
+				if (previous) this.plugin.app.workspace.setActiveLeaf(previous, { focus: true });
+			}
 		} finally {
 			this.routing = false;
 		}
@@ -1116,23 +1164,27 @@ export class BookNavigationController {
 
 	private registerManagedGroup(leaf: WorkspaceLeaf, book: BookScope): PersistedGroupRecord {
 		const existing = this.groupRecords.get(leaf.parent);
+		const newlyAssociated = existing?.kind !== 'managed' || existing.bookId !== book.id;
 		if (existing?.kind === 'managed' && existing.bookId && existing.bookId !== book.id && this.canonicalGroups.get(existing.bookId) === leaf.parent) {
 			this.canonicalGroups.delete(existing.bookId);
 		}
 		const record: PersistedGroupRecord = { kind: 'managed', bookId: book.id, location: getLocation(leaf) };
 		this.groupRecords.set(leaf.parent, record);
 		this.canonicalGroups.set(book.id, leaf.parent);
+		if (newlyAssociated) this.markGroupOpened(leaf.parent);
 		this.persistGroup(leaf.parent, record);
 		return record;
 	}
 
 	private registerFreeGroup(leaf: WorkspaceLeaf): PersistedGroupRecord {
 		const existing = this.groupRecords.get(leaf.parent);
+		const newlyAssociated = !existing || existing.kind !== 'free';
 		if (existing?.kind === 'managed' && existing.bookId && this.canonicalGroups.get(existing.bookId) === leaf.parent) {
 			this.canonicalGroups.delete(existing.bookId);
 		}
 		const record: PersistedGroupRecord = { kind: 'free', location: getLocation(leaf) };
 		this.groupRecords.set(leaf.parent, record);
+		if (newlyAssociated) this.markGroupOpened(leaf.parent);
 		this.persistGroup(leaf.parent, record);
 		return record;
 	}
@@ -1192,6 +1244,7 @@ export class BookNavigationController {
 		}
 		this.groupRecords.delete(group);
 		this.bookHistories.delete(group);
+		this.groupOpenOrder.delete(group);
 		const id = getGroupId(group);
 		if (id) delete this.plugin.runtimeState.groups[id];
 		void this.plugin.saveRuntimeState();
@@ -1265,6 +1318,10 @@ export class BookNavigationController {
 
 	private focusLeaf(leaf: WorkspaceLeaf): void {
 		this.plugin.app.workspace.setActiveLeaf(leaf, { focus: true });
+		this.focusPopoutWindow(leaf);
+	}
+
+	private focusPopoutWindow(leaf: WorkspaceLeaf): void {
 		const root = getPopoutRoot(leaf);
 		if (root) {
 			try {
@@ -1273,6 +1330,10 @@ export class BookNavigationController {
 				// A pop-out can finish closing between route resolution and focus.
 			}
 		}
+	}
+
+	private markGroupOpened(group: LeafParent): void {
+		this.groupOpenOrder.set(group, ++this.groupOpenClock);
 	}
 
 	private collectGroups(): Map<LeafParent, WorkspaceLeaf[]> {

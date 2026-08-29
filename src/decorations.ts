@@ -13,6 +13,7 @@ interface InternalTabGroupDom {
 
 interface ExplorerDecoration {
 	observer: MutationObserver;
+	removeRoutingListeners: () => void;
 	actions: HTMLElement;
 	bookActions: HTMLElement;
 	files: HTMLElement;
@@ -518,6 +519,7 @@ export class DecorationController {
 
 	private disposeExplorerDecoration(root: HTMLElement, decoration: ExplorerDecoration, restoreOrder: boolean): void {
 		decoration.observer.disconnect();
+		decoration.removeRoutingListeners();
 		const tree = getExplorerTreeAdapter(this.plugin, root);
 		const itemEls = new Set<HTMLElement>(tree?.rootItems.map((item) => item.el) ?? []);
 		root.querySelectorAll<HTMLElement>('.scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary').forEach((item) => itemEls.add(item));
@@ -592,7 +594,24 @@ export class DecorationController {
 				if (liveActions !== current.actions || liveFiles !== current.files || !current.modelReady) this.queueExplorerRefresh();
 			});
 			observer.observe(root, { childList: true });
-			decoration = { observer, actions, bookActions, files, filesParent, modelReady: false, toggle, bar, closeAll, openAnother };
+			const markExplorerOpen = (event: Event) => {
+				const title = getEventElement(event)?.closest<HTMLElement>('.nav-file-title');
+				if (!title || !files.contains(title)) return;
+				const item = title.closest<HTMLElement>('.nav-file');
+				const path = item ? getExplorerItemPath(item) : getExplorerItemPath(title);
+				if (path) this.plugin.navigation.expectFileExplorerOpen(path);
+			};
+			const click = (event: MouseEvent) => markExplorerOpen(event);
+			const keydown = (event: KeyboardEvent) => {
+				if (event.key === 'Enter' || event.key === ' ') markExplorerOpen(event);
+			};
+			files.addEventListener('click', click, true);
+			files.addEventListener('keydown', keydown, true);
+			const removeRoutingListeners = () => {
+				files.removeEventListener('click', click, true);
+				files.removeEventListener('keydown', keydown, true);
+			};
+			decoration = { observer, removeRoutingListeners, actions, bookActions, files, filesParent, modelReady: false, toggle, bar, closeAll, openAnother };
 			this.explorerDecorations.set(root, decoration);
 			window.setTimeout(() => {
 				const current = this.explorerDecorations.get(root);
@@ -1073,7 +1092,7 @@ export class DecorationController {
 
 }
 
-function getEventElement(event: DragEvent): Element | null {
+function getEventElement(event: Event): Element | null {
 	const target: unknown = event.target;
 	return isUnknownRecord(target) && typeof target.closest === 'function' ? target as unknown as Element : null;
 }

@@ -7,6 +7,7 @@ export type CreationLocation = 'current-folder' | 'book-root';
 export type ManualTabTextColor = '#000000' | '#ffffff';
 export type MainBookSwitchBehavior = 'close-previous' | 'keep-open';
 export type BookNoteOpenMode = 'same-tab' | 'background-tab' | 'focused-tab';
+export type FileExplorerOpenBehavior = 'book-instance' | 'current-group';
 
 export interface ScopeTabsSettings {
 	colorMode: ColorMode;
@@ -25,6 +26,7 @@ export interface ScopeTabsSettings {
 	mainBookSwitchBehavior: MainBookSwitchBehavior;
 	defaultStartupBookId: string | null;
 	defaultStartupNotePath: string | null;
+	fileExplorerOpenBehavior: FileExplorerOpenBehavior;
 	colorBookSwitcher: boolean;
 	newNoteLocation: CreationLocation;
 	newFolderLocation: CreationLocation;
