@@ -2,7 +2,7 @@ import { App, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, setIc
 import { isHexColor, isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
-import type { BookScope, ColorMode, ManualTabTextColor } from './types';
+import type { BookScope, ColorMode, MainBookSwitchBehavior, ManualTabTextColor } from './types';
 
 export class ScopeTabsSettingTab extends PluginSettingTab {
 	private manualSection: HTMLElement | null = null;
@@ -61,6 +61,25 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				await this.scopeTabs.saveSettings();
 				this.scopeTabs.decorations.refresh();
 			}));
+		const mainBookSwitch = new Setting(containerEl)
+			.setName('Switching the main book')
+			.setDesc('Choose what happens to the previously selected book when the main book dropdown changes.');
+		this.addMainBookSwitchRadio(mainBookSwitch.controlEl, 'close-previous', 'Close previous book');
+		this.addMainBookSwitchRadio(mainBookSwitch.controlEl, 'keep-open', 'Keep previous book open');
+	}
+
+	private addMainBookSwitchRadio(container: HTMLElement, value: MainBookSwitchBehavior, labelText: string): void {
+		const label = container.createEl('label', { cls: 'scope-tabs-radio-label' });
+		const input = label.createEl('input', { type: 'radio' });
+		input.name = 'scope-tabs-main-book-switch-behavior';
+		input.value = value;
+		input.checked = this.scopeTabs.settings.mainBookSwitchBehavior === value;
+		label.appendText(labelText);
+		input.addEventListener('change', () => {
+			if (!input.checked) return;
+			this.scopeTabs.settings.mainBookSwitchBehavior = value;
+			void this.scopeTabs.saveSettings();
+		});
 	}
 
 	private renderNavigation(containerEl: HTMLElement): void {

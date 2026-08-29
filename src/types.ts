@@ -5,6 +5,7 @@ export type TabInsertDirection = 'right' | 'left';
 export type TabDecorationStyle = 'underline' | 'background' | 'dot' | 'custom';
 export type CreationLocation = 'current-folder' | 'book-root';
 export type ManualTabTextColor = '#000000' | '#ffffff';
+export type MainBookSwitchBehavior = 'close-previous' | 'keep-open';
 
 export interface ScopeTabsSettings {
 	colorMode: ColorMode;
@@ -20,6 +21,7 @@ export interface ScopeTabsSettings {
 	tabCustomCss: string;
 	bookModeEnabled: boolean;
 	selectedBookId: string | null;
+	mainBookSwitchBehavior: MainBookSwitchBehavior;
 	colorBookSwitcher: boolean;
 	newNoteLocation: CreationLocation;
 	newFolderLocation: CreationLocation;

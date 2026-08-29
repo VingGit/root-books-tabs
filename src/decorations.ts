@@ -930,6 +930,22 @@ export class DecorationController {
 	}
 
 	private async selectBook(book: BookScope): Promise<void> {
+		if (this.plugin.settings.mainBookSwitchBehavior === 'close-previous') {
+			const previousBook = this.plugin.scopeResolver.listBooks()
+				.find((candidate) => candidate.id === this.plugin.settings.selectedBookId);
+			if (previousBook?.id === book.id) {
+				await this.plugin.navigation.activateBook(book);
+				return;
+			}
+			const opened = await this.plugin.navigation.activateBook(book);
+			if (!opened) return;
+			this.plugin.settings.selectedBookId = book.id;
+			this.plugin.navigation.setPrimaryBook(book.id);
+			if (previousBook) this.plugin.navigation.closeAllBookGroups(previousBook);
+			await this.plugin.saveSettings();
+			this.refreshExplorer();
+			return;
+		}
 		this.plugin.settings.selectedBookId = book.id;
 		this.plugin.navigation.setPrimaryBook(book.id);
 		await this.plugin.saveSettings();
