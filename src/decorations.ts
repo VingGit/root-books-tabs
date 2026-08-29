@@ -197,11 +197,15 @@ export class DecorationController {
 		direction: 'back' | 'forward',
 		enabled: boolean,
 	): void {
+		const sameTabMode = this.plugin.navigation.getBookNoteOpenMode(book) === 'same-tab';
+		const action = direction === 'back' ? 'previous' : 'next';
 		const button = container.createEl('button', {
 			cls: 'scope-tabs-book-history-button clickable-icon',
 			attr: {
 				type: 'button',
-				'aria-label': `Go ${direction} in ${book.name} navigation history`,
+				'aria-label': sameTabMode
+					? `Go ${direction} in ${book.name} page history`
+					: `Go to ${action} ${book.name} tab`,
 			},
 		});
 		button.disabled = !enabled;

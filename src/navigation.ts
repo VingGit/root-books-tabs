@@ -36,7 +36,6 @@ interface GridCreationStep {
 }
 
 interface BookHistoryEntry {
-	kind: 'page' | 'tab';
 	path: string;
 }
 
@@ -155,17 +154,23 @@ export class BookNavigationController {
 		const file = getLeafFile(leaf, this.plugin.app.vault);
 		const book = this.plugin.scopeResolver.resolveFile(file);
 		if (!file || !book) return;
-		const mode = this.getBookNoteOpenMode(book);
-		if (mode === 'same-tab') this.recordPageNavigation(leaf, book, file.path);
-		else this.recordTabActivation(leaf, book, file.path);
+		if (this.getBookNoteOpenMode(book) === 'same-tab') this.recordPageNavigation(leaf, book, file.path);
 	}
 
 	getBookHistoryAvailability(leaf: WorkspaceLeaf): { back: boolean; forward: boolean } {
 		const file = getLeafFile(leaf, this.plugin.app.vault);
 		const book = this.plugin.scopeResolver.resolveFile(file);
 		if (!file || !book) return { back: false, forward: false };
+		if (this.getBookNoteOpenMode(book) !== 'same-tab') {
+			const leaves = this.getOrderedBookLeaves(leaf, book.id);
+			const index = leaves.indexOf(leaf);
+			return {
+				back: index > 0,
+				forward: index >= 0 && index < leaves.length - 1,
+			};
+		}
 		const history = this.ensureBookHistory(leaf, book);
-		this.pruneBookHistory(leaf, book, history);
+		this.pruneBookHistory(book, history);
 		return {
 			back: history.index > 0,
 			forward: history.index >= 0 && history.index < history.entries.length - 1,
@@ -175,9 +180,30 @@ export class BookNavigationController {
 	async navigateBookHistory(leaf: WorkspaceLeaf, direction: 'back' | 'forward'): Promise<boolean> {
 		const file = getLeafFile(leaf, this.plugin.app.vault);
 		const book = this.plugin.scopeResolver.resolveFile(file);
-		if (!file || !book || !this.originalOpenFile) return false;
+		if (!file || !book) return false;
+		if (this.getBookNoteOpenMode(book) !== 'same-tab') {
+			const leaves = this.getOrderedBookLeaves(leaf, book.id);
+			const currentIndex = leaves.indexOf(leaf);
+			const targetIndex = currentIndex + (direction === 'back' ? -1 : 1);
+			const targetLeaf = leaves[targetIndex];
+			if (currentIndex < 0 || !targetLeaf) return false;
+
+			this.navigatingHistory = true;
+			try {
+				this.focusLeaf(targetLeaf);
+				return true;
+			} catch (error) {
+				console.error(`Root Books Tabs could not move ${direction} through the ${book.name} tabs.`, error);
+				new Notice(`Root Books Tabs could not move ${direction} through this book's tabs.`);
+				return false;
+			} finally {
+				this.navigatingHistory = false;
+				this.plugin.decorations.refresh();
+			}
+		}
+		if (!this.originalOpenFile) return false;
 		const history = this.ensureBookHistory(leaf, book);
-		this.pruneBookHistory(leaf, book, history);
+		this.pruneBookHistory(book, history);
 		const targetIndex = history.index + (direction === 'back' ? -1 : 1);
 		const entry = history.entries[targetIndex];
 		if (!entry) return false;
@@ -185,17 +211,11 @@ export class BookNavigationController {
 		this.navigatingHistory = true;
 		this.routing = true;
 		try {
-			if (entry.kind === 'page') {
-				const targetFile = this.plugin.app.vault.getFileByPath(entry.path);
-				if (!targetFile || this.plugin.scopeResolver.resolveFile(targetFile)?.id !== book.id) return false;
-				const targetLeaf = this.plugin.app.workspace.getMostRecentLeaf(leaf.parent) ?? leaf;
-				await this.originalOpenFile.call(targetLeaf, targetFile);
-				this.focusLeaf(targetLeaf);
-			} else {
-				const targetLeaf = this.findBookLeafByPath(leaf, book.id, entry.path);
-				if (!targetLeaf) return false;
-				this.focusLeaf(targetLeaf);
-			}
+			const targetFile = this.plugin.app.vault.getFileByPath(entry.path);
+			if (!targetFile || this.plugin.scopeResolver.resolveFile(targetFile)?.id !== book.id) return false;
+			const targetLeaf = this.plugin.app.workspace.getMostRecentLeaf(leaf.parent) ?? leaf;
+			await this.originalOpenFile.call(targetLeaf, targetFile);
+			this.focusLeaf(targetLeaf);
 			history.index = targetIndex;
 			return true;
 		} catch (error) {
@@ -719,13 +739,11 @@ export class BookNavigationController {
 			return;
 		}
 
-		this.ensureBookHistory(referenceLeaf, book);
 		const existing = this.getGroupLeaves(referenceLeaf).find((leaf) => getLeafFile(leaf, this.plugin.app.vault)?.path === file.path);
 		if (existing) {
 			this.routing = true;
 			try {
 				await original.call(existing, file, openState);
-				this.recordTabActivation(existing, book, file.path);
 				this.focusLeaf(existing);
 			} finally {
 				this.routing = false;
@@ -742,7 +760,6 @@ export class BookNavigationController {
 			this.copyGroupRegistration(referenceLeaf, newLeaf);
 			await original.call(newLeaf, file, openState);
 			this.applyTabInsertDirection(referenceLeaf, newLeaf);
-			this.recordOpenedTab(referenceLeaf, book, file.path, mode === 'focused-tab');
 			if (mode === 'focused-tab') this.focusLeaf(newLeaf);
 			else {
 				this.plugin.app.workspace.setActiveLeaf(previousInGroup, { focus: false });
@@ -1043,42 +1060,27 @@ export class BookNavigationController {
 		const existing = groupHistories.get(book.id);
 		if (existing?.mode === mode) return existing;
 
-		const bookLeaves = this.getGroupLeaves(leaf).filter((candidate) => {
-			const candidateFile = getLeafFile(candidate, this.plugin.app.vault);
-			return this.plugin.scopeResolver.resolveFile(candidateFile)?.id === book.id;
-		});
 		const recent = this.plugin.app.workspace.getMostRecentLeaf(leaf.parent);
-		const entries: BookHistoryEntry[] = mode === 'same-tab'
-			? (() => {
-				const currentFile = getLeafFile(recent ?? leaf, this.plugin.app.vault);
-				return currentFile && this.plugin.scopeResolver.resolveFile(currentFile)?.id === book.id
-					? [{ kind: 'page', path: currentFile.path }]
-					: [];
-			})()
-			: bookLeaves.flatMap((candidate) => {
-				const candidateFile = getLeafFile(candidate, this.plugin.app.vault);
-				return candidateFile ? [{ kind: 'tab' as const, path: candidateFile.path }] : [];
-			});
-		const recentPath = recent ? getLeafFile(recent, this.plugin.app.vault)?.path : undefined;
-		const recentIndex = recentPath ? findLastHistoryPathIndex(entries, recentPath) : -1;
+		const currentFile = getLeafFile(recent ?? leaf, this.plugin.app.vault);
+		const entries: BookHistoryEntry[] = currentFile && this.plugin.scopeResolver.resolveFile(currentFile)?.id === book.id
+			? [{ path: currentFile.path }]
+			: [];
 		const history: BookGroupHistory = {
 			bookId: book.id,
 			entries,
-			index: recentIndex >= 0 ? recentIndex : Math.max(0, entries.length - 1),
+			index: entries.length - 1,
 			mode,
 		};
 		groupHistories.set(book.id, history);
 		return history;
 	}
 
-	private pruneBookHistory(leaf: WorkspaceLeaf, book: BookScope, history: BookGroupHistory): void {
+	private pruneBookHistory(book: BookScope, history: BookGroupHistory): void {
 		const oldIndex = history.index;
 		let keptThroughIndex = -1;
 		const entries: BookHistoryEntry[] = [];
 		for (const [index, entry] of history.entries.entries()) {
-			const keep = entry.kind === 'page'
-				? this.plugin.scopeResolver.resolveFile(this.plugin.app.vault.getFileByPath(entry.path))?.id === book.id
-				: this.findBookLeafByPath(leaf, book.id, entry.path) !== null;
+			const keep = this.plugin.scopeResolver.resolveFile(this.plugin.app.vault.getFileByPath(entry.path))?.id === book.id;
 			if (!keep) continue;
 			entries.push(entry);
 			if (index <= oldIndex) keptThroughIndex = entries.length - 1;
@@ -1089,50 +1091,18 @@ export class BookNavigationController {
 			: Math.min(entries.length - 1, Math.max(0, keptThroughIndex));
 	}
 
-	private findBookLeafByPath(reference: WorkspaceLeaf, bookId: string, path: string): WorkspaceLeaf | null {
-		return this.getGroupLeaves(reference).find((candidate) => {
-			const candidateFile = getLeafFile(candidate, this.plugin.app.vault);
-			return candidateFile?.path === path && this.plugin.scopeResolver.resolveFile(candidateFile)?.id === bookId;
-		}) ?? null;
-	}
-
 	private recordInitialBookFile(leaf: WorkspaceLeaf, book: BookScope, path: string): void {
-		const mode = this.getBookNoteOpenMode(book);
-		if (mode === 'same-tab') this.recordPageNavigation(leaf, book, path);
-		else this.recordTabActivation(leaf, book, path);
+		if (this.getBookNoteOpenMode(book) === 'same-tab') this.recordPageNavigation(leaf, book, path);
 	}
 
 	private recordPageNavigation(leaf: WorkspaceLeaf, book: BookScope, path: string): void {
 		const history = this.ensureBookHistory(leaf, book);
-		this.recordHistoryEntry(history, { kind: 'page', path });
-	}
-
-	private recordTabActivation(leaf: WorkspaceLeaf, book: BookScope, path: string): void {
-		const history = this.ensureBookHistory(leaf, book);
-		this.pruneBookHistory(leaf, book, history);
-		this.recordHistoryEntry(history, { kind: 'tab', path });
-	}
-
-	private recordOpenedTab(
-		referenceLeaf: WorkspaceLeaf,
-		book: BookScope,
-		path: string,
-		focus: boolean,
-	): void {
-		const history = this.ensureBookHistory(referenceLeaf, book);
-		this.pruneBookHistory(referenceLeaf, book, history);
-		const referencePath = getLeafFile(referenceLeaf, this.plugin.app.vault)?.path;
-		if (referencePath && history.entries[history.index]?.path !== referencePath) {
-			this.recordHistoryEntry(history, { kind: 'tab', path: referencePath });
-		}
-		const insertionIndex = history.index + 1;
-		history.entries.splice(insertionIndex, history.entries.length - insertionIndex, { kind: 'tab', path });
-		if (focus) history.index = insertionIndex;
+		this.recordHistoryEntry(history, { path });
 	}
 
 	private recordHistoryEntry(history: BookGroupHistory, entry: BookHistoryEntry): void {
 		const current = history.entries[history.index];
-		if (current?.kind === entry.kind && current.path === entry.path) return;
+		if (current?.path === entry.path) return;
 		const insertionIndex = history.index + 1;
 		history.entries.splice(insertionIndex, history.entries.length - insertionIndex, entry);
 		history.index = insertionIndex;
@@ -1356,20 +1326,31 @@ export class BookNavigationController {
 		return leaves;
 	}
 
+	private getOrderedBookLeaves(reference: WorkspaceLeaf, bookId: string): WorkspaceLeaf[] {
+		return this.getGroupLeaves(reference).filter((candidate) =>
+			this.plugin.scopeResolver.resolveFile(getLeafFile(candidate, this.plugin.app.vault))?.id === bookId);
+	}
+
 	private applyTabInsertDirection(reference: WorkspaceLeaf, created: WorkspaceLeaf): void {
 		const parent = getMutableTabGroup(created);
 		if (!parent || reference.parent !== created.parent) return;
 		const referenceIndex = parent.children.indexOf(reference);
 		const createdIndex = parent.children.indexOf(created);
-		const offset = this.plugin.settings.tabInsertDirection === 'left' ? -1 : 1;
-		if (referenceIndex < 0 || createdIndex < 0 || createdIndex === referenceIndex + offset) return;
+		const insertLeft = this.plugin.settings.tabInsertDirection === 'left';
+		if (referenceIndex < 0 || createdIndex < 0) return;
+		if (insertLeft && createdIndex === referenceIndex - 1) return;
+		if (!insertLeft && createdIndex === parent.children.length - 1) return;
 		let removed = false;
 		try {
 			parent.removeChild(created);
 			removed = true;
-			const updatedReferenceIndex = parent.children.indexOf(reference);
-			if (updatedReferenceIndex < 0) throw new Error('Reference tab disappeared during tab reordering.');
-			parent.insertChild(updatedReferenceIndex + (offset > 0 ? 1 : 0), created);
+			if (insertLeft) {
+				const updatedReferenceIndex = parent.children.indexOf(reference);
+				if (updatedReferenceIndex < 0) throw new Error('Reference tab disappeared during tab reordering.');
+				parent.insertChild(updatedReferenceIndex, created);
+			} else {
+				parent.insertChild(parent.children.length, created);
+			}
 			removed = false;
 		} catch {
 			// Tab ordering is a compatibility enhancement; routing is already complete.
@@ -1399,13 +1380,6 @@ function cloneBookHistories(source: Map<string, BookGroupHistory>): Map<string, 
 		...history,
 		entries: history.entries.map((entry) => ({ ...entry })),
 	}]));
-}
-
-function findLastHistoryPathIndex(entries: BookHistoryEntry[], path: string): number {
-	for (let index = entries.length - 1; index >= 0; index--) {
-		if (entries[index]?.path === path) return index;
-	}
-	return -1;
 }
 
 function getClockwiseGridCreationSteps(rows: number, columns: number): GridCreationStep[] {
