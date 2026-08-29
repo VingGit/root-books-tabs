@@ -159,7 +159,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		this.renderGridDimension(this.gridDimensionsSection, 'Grid columns', 'gridColumns');
 		new Setting(containerEl)
 			.setName('New tab position')
-			.setDesc('Place a newly opened file to the right or left. Left placement uses a feature-detected compatibility adapter.')
+			.setDesc('Place a newly opened file immediately to the right or left of its current tab. Ordering uses a feature-detected compatibility adapter.')
 			.addDropdown((dropdown) => dropdown
 				.addOptions({ right: 'Right', left: 'Left' })
 				.setValue(this.scopeTabs.settings.tabInsertDirection)

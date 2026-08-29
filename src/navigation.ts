@@ -550,14 +550,17 @@ export class BookNavigationController {
 				if (!destination) continue;
 				try {
 					let target: WorkspaceLeaf;
+					let tabReference: WorkspaceLeaf | null = null;
 					if (isEmptyLeaf(destination)) {
 						target = destination;
 					} else {
+						tabReference = destination;
 						this.plugin.app.workspace.setActiveLeaf(destination, { focus: false });
 						target = this.plugin.app.workspace.getLeaf('tab');
 					}
 					this.registerManagedGroup(target, entry.book);
 					await target.setViewState(entry.state);
+					if (tabReference) this.applyTabInsertDirection(tabReference, target);
 					if (entry.leaf === activeBefore) activeAfter = target;
 					entry.leaf.detach();
 					destinations.set(entry.book.id, target);
@@ -804,6 +807,7 @@ export class BookNavigationController {
 			if (managed) this.registerManagedGroup(next, book);
 			else this.registerFreeGroup(next);
 			await next.setViewState(state);
+			this.applyTabInsertDirection(reference, next);
 			reference = next;
 		}
 	}
@@ -1292,17 +1296,29 @@ export class BookNavigationController {
 	}
 
 	private applyTabInsertDirection(reference: WorkspaceLeaf, created: WorkspaceLeaf): void {
-		if (this.plugin.settings.tabInsertDirection !== 'left') return;
 		const parent = getMutableTabGroup(created);
 		if (!parent || reference.parent !== created.parent) return;
 		const referenceIndex = parent.children.indexOf(reference);
 		const createdIndex = parent.children.indexOf(created);
-		if (referenceIndex < 0 || createdIndex < 0 || createdIndex === referenceIndex - 1) return;
+		const offset = this.plugin.settings.tabInsertDirection === 'left' ? -1 : 1;
+		if (referenceIndex < 0 || createdIndex < 0 || createdIndex === referenceIndex + offset) return;
+		let removed = false;
 		try {
 			parent.removeChild(created);
-			parent.insertChild(referenceIndex, created);
+			removed = true;
+			const updatedReferenceIndex = parent.children.indexOf(reference);
+			if (updatedReferenceIndex < 0) throw new Error('Reference tab disappeared during tab reordering.');
+			parent.insertChild(updatedReferenceIndex + (offset > 0 ? 1 : 0), created);
+			removed = false;
 		} catch {
 			// Tab ordering is a compatibility enhancement; routing is already complete.
+			if (removed) {
+				try {
+					parent.insertChild(Math.min(createdIndex, parent.children.length), created);
+				} catch {
+					// Obsidian rejected both the requested move and its best-effort rollback.
+				}
+			}
 		}
 	}
 
