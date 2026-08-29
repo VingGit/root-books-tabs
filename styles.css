@@ -1,4 +1,7 @@
 .scope-tabs-book-label {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
 	color: var(--scope-tabs-book-color);
 	font-size: var(--font-ui-smaller);
 	font-weight: 600;
@@ -6,6 +9,45 @@
 	opacity: 0.78;
 	padding: 0.4rem 0.75rem 0.15rem;
 	text-transform: none;
+}
+
+.scope-tabs-book-label-navigation-only {
+	padding-top: 0.25rem;
+}
+
+.scope-tabs-book-history-controls {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.1rem;
+}
+
+.scope-tabs-book-history-button {
+	color: var(--scope-tabs-book-color);
+	height: 22px;
+	min-width: 22px;
+	padding: 3px;
+	opacity: 0.82;
+}
+
+.scope-tabs-book-history-button svg {
+	height: 14px;
+	width: 14px;
+}
+
+.scope-tabs-book-history-button:not(:disabled):hover {
+	background: color-mix(in srgb, var(--scope-tabs-book-color) 18%, transparent);
+	opacity: 1;
+}
+
+.scope-tabs-book-history-button:focus-visible {
+	box-shadow: 0 0 0 2px var(--background-primary), 0 0 0 4px var(--scope-tabs-book-color);
+	outline: none;
+}
+
+.scope-tabs-book-history-button:disabled {
+	color: var(--text-faint);
+	cursor: default;
+	opacity: 0.32;
 }
 
 .workspace-tab-header.scope-tabs-color-tab {
