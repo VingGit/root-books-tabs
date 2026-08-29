@@ -235,6 +235,18 @@ export class BookNavigationController {
 		this.persistBookOrder([bookId, ...current.filter((id) => id !== bookId)]);
 	}
 
+	hasRestoredWorkspaceHistory(): boolean {
+		let found = false;
+		this.plugin.app.workspace.iterateRootLeaves((leaf) => {
+			if (!found && leaf.getViewState().type !== 'empty') found = true;
+		});
+		if (found) return true;
+		this.plugin.app.workspace.iterateAllLeaves((leaf) => {
+			if (!found && getLocation(leaf) === 'popout' && leaf.getViewState().type !== 'empty') found = true;
+		});
+		return found;
+	}
+
 	getLatestOpenBookId(excludeBookId: string): string | null {
 		const openBookIds = this.getOpenBookIds();
 		const ordered = this.syncBookOrder();
@@ -244,13 +256,19 @@ export class BookNavigationController {
 		return null;
 	}
 
-	async activateBook(book: BookScope): Promise<boolean> {
+	async activateBook(book: BookScope, preferredEntryFile?: TFile | null): Promise<boolean> {
+		const entryFile = preferredEntryFile && this.plugin.scopeResolver.resolveFile(preferredEntryFile)?.id === book.id
+			? preferredEntryFile
+			: this.resolveBookEntryFile(book);
 		const existing = this.getCanonicalBookLeaf(book);
 		if (existing) {
-			this.focusLeaf(existing);
+			const existingBookLeaf = this.getGroupLeaves(existing).find((leaf) =>
+				this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault))?.id === book.id);
+			if (existingBookLeaf) this.focusLeaf(existingBookLeaf);
+			else if (entryFile) await this.openBookInLeaf(existing, book, entryFile);
+			else this.focusLeaf(existing);
 			return true;
 		}
-		const entryFile = this.resolveBookEntryFile(book);
 		if (!entryFile || !this.originalOpenFile) return false;
 		const soleFileLeaf = this.findSoleFileLeaf();
 		if (soleFileLeaf) {
