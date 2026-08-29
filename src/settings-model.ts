@@ -23,7 +23,7 @@ export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 	gridRows: 2,
 	gridColumns: 2,
 	tabInsertDirection: 'right',
-	focusNewTabs: true,
+	bookNoteOpenMode: 'focused-tab',
 	openBooksInExternalWindows: false,
 };
 
@@ -76,7 +76,11 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	settings.gridRows = clampGridDimension(source.gridRows);
 	settings.gridColumns = clampGridDimension(source.gridColumns);
 	if (source.tabInsertDirection === 'right' || source.tabInsertDirection === 'left') settings.tabInsertDirection = source.tabInsertDirection;
-	copyBoolean(source, settings, 'focusNewTabs');
+	if (source.bookNoteOpenMode === 'same-tab' || source.bookNoteOpenMode === 'background-tab' || source.bookNoteOpenMode === 'focused-tab') {
+		settings.bookNoteOpenMode = source.bookNoteOpenMode;
+	} else if (typeof source.focusNewTabs === 'boolean') {
+		settings.bookNoteOpenMode = source.focusNewTabs ? 'focused-tab' : 'background-tab';
+	}
 	copyBoolean(source, settings, 'openBooksInExternalWindows');
 	return settings;
 }

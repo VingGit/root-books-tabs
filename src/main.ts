@@ -102,7 +102,10 @@ export default class ScopeTabsPlugin extends Plugin {
 		this.navigation.install();
 		this.newNoteLocation.install();
 		this.decorations.refresh();
-		this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshWorkspaceState()));
+		this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
+			this.navigation.observeActiveLeaf(leaf);
+			this.refreshWorkspaceState();
+		}));
 		this.registerEvent(this.app.workspace.on('layout-change', () => this.refreshWorkspaceState()));
 		this.registerEvent(this.app.workspace.on('file-open', () => {
 			this.refreshWorkspaceState();

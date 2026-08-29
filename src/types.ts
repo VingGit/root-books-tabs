@@ -6,6 +6,7 @@ export type TabDecorationStyle = 'underline' | 'background' | 'dot' | 'custom';
 export type CreationLocation = 'current-folder' | 'book-root';
 export type ManualTabTextColor = '#000000' | '#ffffff';
 export type MainBookSwitchBehavior = 'close-previous' | 'keep-open';
+export type BookNoteOpenMode = 'same-tab' | 'background-tab' | 'focused-tab';
 
 export interface ScopeTabsSettings {
 	colorMode: ColorMode;
@@ -30,7 +31,7 @@ export interface ScopeTabsSettings {
 	gridRows: number;
 	gridColumns: number;
 	tabInsertDirection: TabInsertDirection;
-	focusNewTabs: boolean;
+	bookNoteOpenMode: BookNoteOpenMode;
 	openBooksInExternalWindows: boolean;
 }
 

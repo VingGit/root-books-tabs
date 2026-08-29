@@ -179,9 +179,37 @@ export class DecorationController {
 		if (!(leaf.view instanceof MarkdownView)) return;
 		const content = leaf.view.contentEl;
 		content.querySelector(':scope > .scope-tabs-book-label')?.remove();
-		if (!this.plugin.settings.showBookLabel) return;
-		const label = content.createDiv({ cls: 'scope-tabs-book-label', text: book.name, prepend: true });
+		const label = content.createDiv({ cls: 'scope-tabs-book-label', prepend: true });
 		label.style.setProperty('--scope-tabs-book-color', color);
+		if (this.plugin.settings.showBookLabel) label.createSpan({ cls: 'scope-tabs-book-label-name', text: book.name });
+		else label.addClass('scope-tabs-book-label-navigation-only');
+		const history = this.plugin.navigation.getBookHistoryAvailability(leaf);
+		const controls = label.createSpan({ cls: 'scope-tabs-book-history-controls' });
+		this.createBookHistoryButton(controls, leaf, book, 'back', history.back);
+		this.createBookHistoryButton(controls, leaf, book, 'forward', history.forward);
+	}
+
+	private createBookHistoryButton(
+		container: HTMLElement,
+		leaf: WorkspaceLeaf,
+		book: BookScope,
+		direction: 'back' | 'forward',
+		enabled: boolean,
+	): void {
+		const button = container.createEl('button', {
+			cls: 'scope-tabs-book-history-button clickable-icon',
+			attr: {
+				type: 'button',
+				'aria-label': `Go ${direction} in ${book.name} navigation history`,
+			},
+		});
+		button.disabled = !enabled;
+		setIcon(button, direction === 'back' ? 'arrow-left' : 'arrow-right');
+		button.addEventListener('click', (event: MouseEvent) => {
+			event.preventDefault();
+			event.stopPropagation();
+			void this.plugin.navigation.navigateBookHistory(leaf, direction);
+		});
 	}
 
 	private decorateTabHeader(leaf: WorkspaceLeaf, book: BookScope, color: string): void {

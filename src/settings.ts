@@ -141,12 +141,20 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 					await this.scopeTabs.saveSettings();
 				}));
 		new Setting(containerEl)
-			.setName('Focus newly opened tabs')
-			.setDesc('When disabled, a newly created same-book tab does not take focus. Reused and cross-book tabs still do.')
-			.addToggle((toggle) => toggle.setValue(this.scopeTabs.settings.focusNewTabs).onChange(async (value: boolean) => {
-				this.scopeTabs.settings.focusNewTabs = value;
-				await this.scopeTabs.saveSettings();
-			}));
+			.setName('Book note opening')
+			.setDesc('Open same-book notes in the current tab, a background tab, or a focused new tab. Cross-book navigation still focuses its destination book.')
+			.addDropdown((dropdown) => dropdown
+				.addOptions({
+					'same-tab': 'Same tab',
+					'background-tab': 'New tab in background',
+					'focused-tab': 'New tab and focus',
+				})
+				.setValue(this.scopeTabs.settings.bookNoteOpenMode)
+				.onChange(async (value: string) => {
+					this.scopeTabs.settings.bookNoteOpenMode = value as typeof this.scopeTabs.settings.bookNoteOpenMode;
+					this.scopeTabs.navigation.resetBookHistories();
+					await this.scopeTabs.saveSettings();
+				}));
 		new Setting(containerEl)
 			.setName('Open new books in pop-outs')
 			.setDesc('Use an Obsidian desktop pop-out instead of a split when a book is first opened.')
