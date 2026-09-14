@@ -286,4 +286,4 @@ Bare global template filenames resolve inside `template-folder`; global paths co
 
 `forceUpdateLinks` defaults to true and keeps Obsidian's automatic internal-link updating enabled while the plugin is active. Resetting Root Books Tabs restores this default and clears any remembered config-note move choice.
 
-The command palette (and Obsidian slash commands when enabled) exposes show-note-frontmatter, standalone vault-config pop-out, and hide-opened-frontmatter actions. Ctrl+Shift+P/R/H defaults are assigned only when the detected shortcut registry shows no collision.
+The command palette (and Obsidian slash commands when enabled) exposes show-note-frontmatter, standalone vault-config pop-out, and hide-opened-frontmatter actions. Assign any preferred shortcuts through Obsidian's Hotkeys settings.

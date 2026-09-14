@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, type Hotkey, type Menu, type ViewState, type WorkspaceLeaf } from 'obsidian';
+import { MarkdownView, Notice, type Menu, type ViewState, type WorkspaceLeaf } from 'obsidian';
 import type ScopeTabsPlugin from './main';
 import { getSourcePopoutInit } from './popout-position';
 
@@ -10,12 +10,11 @@ export class FrontmatterActions {
 
 	install(): void {
 		const actions = [
-			{ id: 'show-note-frontmatter', name: 'Show frontmatter for the focused note', key: 'P', run: () => this.showFocused() },
-			{ id: 'open-vault-frontmatter', name: 'Open vault config in a standalone pop-out', key: 'R', run: () => this.showRoot() },
-			{ id: 'hide-opened-frontmatter', name: 'Hide frontmatter opened by Root Books Tabs', key: 'H', run: () => this.hide() },
+			{ id: 'show-note-frontmatter', name: 'Show frontmatter for the focused note', run: () => this.showFocused() },
+			{ id: 'open-vault-frontmatter', name: 'Open vault config in a standalone pop-out', run: () => this.showRoot() },
+			{ id: 'hide-opened-frontmatter', name: 'Hide frontmatter opened by Root Books Tabs', run: () => this.hide() },
 		];
-		// User-requested shortcuts are registered only after checking the native registry for collisions.
-		for (const action of actions) this.plugin.addCommand({ id: action.id, name: action.name, hotkeys: this.availableHotkey(action.key), callback: () => action.run() });
+		for (const action of actions) this.plugin.addCommand({ id: action.id, name: action.name, callback: () => action.run() });
 		this.plugin.registerEvent(this.plugin.app.workspace.on('editor-menu', (menu, _editor, info) => {
 			this.addMenuItems(menu, info instanceof MarkdownView ? info.leaf : undefined);
 		}));
@@ -70,22 +69,4 @@ export class FrontmatterActions {
 		this.shown.clear(); root?.detach();
 	}
 
-	/** No public shortcut registry exists. Assign defaults only when every binding can be inspected. */
-	private availableHotkey(key: string): Hotkey[] {
-		const app = this.plugin.app as unknown as Record<string, unknown>;
-		const manager = app.hotkeyManager;
-		if (!isRecord(manager) || !isRecord(manager.defaultKeys) || !isRecord(manager.customKeys)) return [];
-		const bindings = { ...manager.defaultKeys, ...manager.customKeys };
-		for (const value of Object.values(bindings)) {
-			if (!Array.isArray(value)) return [];
-			for (const binding of value as unknown[]) {
-				if (!isRecord(binding) || !Array.isArray(binding.modifiers)) return [];
-				if (typeof binding.key !== 'string') return [];
-				if (binding.key.toUpperCase() === key && binding.modifiers.includes('Shift') && (binding.modifiers.includes('Mod') || binding.modifiers.includes('Ctrl'))) return [];
-			}
-		}
-		return [{ modifiers: ['Mod', 'Shift'], key }];
-	}
 }
-
-function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
