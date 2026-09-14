@@ -1,4 +1,4 @@
-import type { ScopeTabsRuntimeStateV1, ScopeTabsSettings } from './types';
+import type { ScopeTabsRuntimeStateV1, ScopeTabsSettings, TemplateFileType, TemplateRule, TemplateRuleTuple } from './types';
 
 export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 	colorMode: 'frontmatter',
@@ -30,10 +30,10 @@ export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 	indexMoveDecision: 'ask',
 	excludedBookFolders: ['templates'],
 	excludedFileGroupLocation: 'next-to-current',
-	templateFilePrefix: '{{date}}_',
-	templateFileDate: 'DD.MM.YYYY',
-	templateFilePath: 'templates/example.md',
-	templateFileAppliedTo: 'md',
+	templateFolder: 'templates',
+	templateMd: { 'example.md': ['DD.MM.YYYY', '{{date}}_', true] },
+	templateCanvas: {},
+	templateBase: {},
 	forceUpdateLinks: true,
 	tabInsertDirection: 'right',
 	bookNoteOpenMode: 'focused-tab',
@@ -103,10 +103,11 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	if (source.indexMoveDecision === 'ask' || source.indexMoveDecision === 'block' || source.indexMoveDecision === 'merge-frontmatter' || source.indexMoveDecision === 'append-body' || source.indexMoveDecision === 'replace-frontmatter' || source.indexMoveDecision === 'replace-content' || source.indexMoveDecision === 'swap') settings.indexMoveDecision = source.indexMoveDecision;
 	if (Array.isArray(source.excludedBookFolders)) settings.excludedBookFolders = sanitizeExcludedBookFolders(source.excludedBookFolders);
 	if (source.excludedFileGroupLocation === 'next-to-current' || source.excludedFileGroupLocation === 'popout') settings.excludedFileGroupLocation = source.excludedFileGroupLocation;
-	if (typeof source.templateFilePrefix === 'string') settings.templateFilePrefix = source.templateFilePrefix;
-	if (typeof source.templateFileDate === 'string' && source.templateFileDate.trim()) settings.templateFileDate = source.templateFileDate.trim();
-	if (typeof source.templateFilePath === 'string') settings.templateFilePath = source.templateFilePath.replace(/^\.\//, '').trim();
-	if (typeof source.templateFileAppliedTo === 'string' && source.templateFileAppliedTo.trim()) settings.templateFileAppliedTo = source.templateFileAppliedTo.trim();
+	if (typeof source.templateFolder === 'string') settings.templateFolder = sanitizeTemplatePath(source.templateFolder);
+	const legacyRule = migrateLegacyTemplateRule(source);
+	settings.templateMd = sanitizeTemplateRule(source.templateMd, 'md') ?? legacyRule ?? structuredClone(DEFAULT_SETTINGS.templateMd);
+	settings.templateCanvas = sanitizeTemplateRule(source.templateCanvas, 'canvas') ?? structuredClone(DEFAULT_SETTINGS.templateCanvas);
+	settings.templateBase = sanitizeTemplateRule(source.templateBase, 'base') ?? structuredClone(DEFAULT_SETTINGS.templateBase);
 	copyBoolean(source, settings, 'forceUpdateLinks');
 	if (source.tabInsertDirection === 'end') settings.tabInsertDirection = 'end';
 	else if (source.tabInsertDirection === 'left') settings.tabInsertDirection = 'right';
@@ -191,6 +192,34 @@ function normalizeManualTabTextColor(value: string): '#000000' | '#ffffff' | nul
 function clampGridDimension(value: unknown): number {
 	if (typeof value !== 'number' || !Number.isFinite(value)) return 2;
 	return Math.min(16, Math.max(2, Math.round(value)));
+}
+
+function migrateLegacyTemplateRule(source: Record<string, unknown>): TemplateRule | null {
+	const applied = typeof source.templateFileAppliedTo === 'string'
+		? source.templateFileAppliedTo.split(/[\s,]+/).map(value => value.replace(/^\./, '').toLowerCase())
+		: [];
+	if (!applied.includes('md') && !applied.includes('*')) return null;
+	const path = typeof source.templateFilePath === 'string' ? sanitizeTemplatePath(source.templateFilePath) : '';
+	if (!path || !path.toLowerCase().endsWith('.md')) return null;
+	const date = typeof source.templateFileDate === 'string' ? source.templateFileDate.trim() : '';
+	const prefix = typeof source.templateFilePrefix === 'string' ? source.templateFilePrefix : '';
+	return { [path]: [date, prefix, true] };
+}
+
+function sanitizeTemplateRule(value: unknown, type: TemplateFileType): TemplateRule | null {
+	if (!isRecord(value)) return null;
+	const entry = Object.entries(value)[0];
+	if (!entry) return {};
+	const path = sanitizeTemplatePath(entry[0]);
+	const tuple = entry[1];
+	if (!path || !path.toLowerCase().endsWith(`.${type}`) || !Array.isArray(tuple)
+		|| typeof tuple[0] !== 'string' || typeof tuple[1] !== 'string' || typeof tuple[2] !== 'boolean') return {};
+	const normalized: TemplateRuleTuple = [tuple[0].trim(), tuple[1], tuple[2]];
+	return { [path]: normalized };
+}
+
+function sanitizeTemplatePath(value: string): string {
+	return value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').trim();
 }
 
 export function sanitizeExcludedBookFolders(value: unknown[]): string[] {

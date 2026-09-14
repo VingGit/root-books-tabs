@@ -23,11 +23,10 @@ function fixture() {
 	binary.set(template.path, new TextEncoder().encode('Template').buffer);
 	const plugin = {
 		settings: {
-			configFileBaseName: 'index',
-			templateFilePrefix: '',
-			templateFileDate: 'DD.MM.YYYY',
-			templateFilePath: 'templates/example.md',
-			templateFileAppliedTo: 'md',
+			configFileBaseName: 'index', templateFolder: 'templates',
+			templateMd: { 'example.md': ['DD.MM.YYYY', '{{date}}_', true] } as Record<string, [string, string, boolean]>,
+			templateCanvas: {} as Record<string, [string, string, boolean]>,
+			templateBase: {} as Record<string, [string, string, boolean]>,
 		},
 		vaultConfig: { values: {} as Record<string, unknown> },
 		scopeResolver: { resolveFile: (file: TFile) => file.path.startsWith('Book A/') ? { id: 'Book A' } : null },
@@ -40,6 +39,12 @@ function fixture() {
 				process: async (_file: TFile, change: (content: string) => string) => { change('---\n{}\n---\n'); },
 				readBinary: async (file: TFile) => binary.get(file.path) ?? new ArrayBuffer(0),
 				modifyBinary: async (file: TFile, contents: ArrayBuffer) => { binary.set(file.path, contents); file.stat.size = contents.byteLength; },
+				createFolder: async (path: string) => add(new TFolder(path)),
+				create: async (path: string, contents: string) => {
+					const file = add(new TFile(path));
+					binary.set(path, new TextEncoder().encode(contents).buffer);
+					return file;
+				},
 			},
 			metadataCache: { getFileCache: (file: TFile) => ({ frontmatter: frontmatter.get(file.path) }) },
 			fileManager: {
@@ -48,7 +53,7 @@ function fixture() {
 				},
 				renameFile: async (file: TAbstractFile, nextPath: string) => {
 					const oldPath = file.path, oldParent = file.parent!;
-					oldParent.children = oldParent.children.filter((child) => child !== file);
+					oldParent.children = oldParent.children.filter(child => child !== file);
 					files.delete(oldPath);
 					const contents = binary.get(oldPath); binary.delete(oldPath);
 					file.path = nextPath;
@@ -72,30 +77,37 @@ function fixture() {
 	return { add, binary, book, files, frontmatter, plugin, root, service, sub, template, templateFolder };
 }
 
-test('template fields inherit independently from root and nearest folder overrides', () => {
+test('each content type inherits its nearest complete rule independently', () => {
 	const f = fixture();
 	f.plugin.vaultConfig.values = {
-		'template-file-prefix': 'root-',
-		'book-tabs-template-file-path': 'templates/root.md',
+		'template-md': { 'root.md': ['YY', 'root-', true] },
+		'book-tabs-template-canvas': { 'global.canvas': ['', '', false] },
 	};
 	const bookConfig = f.add(new TFile('Book A/index.md'));
 	const subConfig = f.add(new TFile('Book A/sub/index.md'));
-	f.frontmatter.set(bookConfig.path, {
-		'template-file-prefix': 'book-',
-		'book-tabs-template-file-applied-to': 'canvas',
-	});
-	f.frontmatter.set(subConfig.path, { 'template-file-path': 'templates/sub.md' });
+	f.frontmatter.set(bookConfig.path, { 'book-tabs-template-md': { 'book.md': ['DD', 'book-', true] } });
+	f.frontmatter.set(subConfig.path, { 'template-base': { 'sub.base': ['', '', false] } });
 	assert.deepEqual(f.service.resolveForFolder(f.sub), {
-		templateFilePrefix: 'book-',
-		templateFileDate: 'DD.MM.YYYY',
-		templateFilePath: 'templates/sub.md',
-		templateFileAppliedTo: 'canvas',
+		templateFolder: 'templates',
+		templateMd: { 'book.md': ['DD', 'book-', true] },
+		templateCanvas: { 'global.canvas': ['', '', false] },
+		templateBase: { 'sub.base': ['', '', false] },
 	});
 });
 
-test('create applies a valid date prefix, adds time on collision, and copies binary-safe contents', async () => {
+test('legacy Markdown folder fields keep their independent nearest-folder inheritance', () => {
 	const f = fixture();
-	f.plugin.settings.templateFilePrefix = '{{date}}_';
+	const bookConfig = f.add(new TFile('Book A/index.md'));
+	const subConfig = f.add(new TFile('Book A/sub/index.md'));
+	f.frontmatter.set(bookConfig.path, { 'template-file-prefix': 'book-' });
+	f.frontmatter.set(subConfig.path, { 'template-file-path': 'templates/sub.md', 'template-file-applied-To': 'md' });
+	assert.deepEqual(f.service.resolveForFolder(f.sub).templateMd, {
+		'templates/sub.md': ['DD.MM.YYYY', 'book-', true],
+	});
+});
+
+test('Markdown rule uses the global template folder, dates names, and copies binary-safe contents', async () => {
+	const f = fixture();
 	f.add(new TFile('Book A/17.09.2026_note.md'));
 	const created = f.add(new TFile('Book A/note.md')); created.stat.size = 0;
 	assert.equal(await f.service.handleCreate(created), true);
@@ -103,33 +115,57 @@ test('create applies a valid date prefix, adds time on collision, and copies bin
 	assert.equal(new TextDecoder().decode(f.binary.get(created.path)), 'Template');
 });
 
-test('create applies to imported matching files and ignores unmatched extensions, config notes, and the template source', async () => {
+test('Canvas can copy a template without changing the filename', async () => {
 	const f = fixture();
-	f.plugin.settings.templateFilePrefix = 'new-';
-	const nonempty = f.add(new TFile('Book A/content.md'));
-	const canvas = f.add(new TFile('Book A/board.canvas')); canvas.stat.size = 0;
-	const config = f.add(new TFile('Book A/index.md')); config.stat.size = 0;
-	const rootFile = f.add(new TFile('root.md')); rootFile.stat.size = 0;
-	const excluded = f.add(new TFile('templates/other.md')); excluded.stat.size = 0;
-	assert.equal(await f.service.handleCreate(nonempty), true);
-	assert.equal(await f.service.handleCreate(canvas), false);
+	const canvasTemplate = f.add(new TFile('templates/blank.canvas'));
+	f.binary.set(canvasTemplate.path, new TextEncoder().encode('{"nodes":[],"edges":[]}').buffer);
+	f.plugin.settings.templateCanvas = { 'blank.canvas': ['', 'unused-', false] };
+	const created = f.add(new TFile('Book A/board.canvas'));
+	assert.equal(await f.service.handleCreate(created), true);
+	assert.equal(created.path, 'Book A/board.canvas');
+	assert.equal(new TextDecoder().decode(f.binary.get(created.path)), '{"nodes":[],"edges":[]}');
+});
+
+test('unsupported, config, template-source, root, and excluded files remain unchanged', async () => {
+	const f = fixture();
+	const unsupported = f.add(new TFile('Book A/photo.png'));
+	const config = f.add(new TFile('Book A/index.md'));
+	const rootFile = f.add(new TFile('root.md'));
+	const excluded = f.add(new TFile('templates/other.md'));
+	assert.equal(await f.service.handleCreate(unsupported), false);
 	assert.equal(await f.service.handleCreate(config), false);
 	assert.equal(await f.service.handleCreate(f.template), false);
 	assert.equal(await f.service.handleCreate(rootFile), false);
 	assert.equal(await f.service.handleCreate(excluded), false);
-	assert.equal(nonempty.path, 'Book A/new-content.md');
-	assert.equal(rootFile.path, 'root.md');
-	assert.equal(excluded.path, 'templates/other.md');
-	assert.equal(new TextDecoder().decode(f.binary.get(nonempty.path)), 'Template');
 });
 
-test('folder override writes use prefixed keys without replacing plain frontmatter and are discoverable', async () => {
+test('saving overrides writes new mappings and creates only missing anchored template files', async () => {
 	const f = fixture();
 	const config = f.add(new TFile('Book A/index.md'));
-	f.frontmatter.set(config.path, { 'template-file-prefix': 'keep-plain' });
-	await f.service.writeFolderOverrides(f.book, { templateFilePrefix: 'managed-' });
-	assert.equal(f.frontmatter.get(config.path)?.['template-file-prefix'], 'keep-plain');
-	assert.equal(f.frontmatter.get(config.path)?.['book-tabs-template-file-prefix'], 'managed-');
-	assert.equal(f.service.readFolderOverrides(f.book).templateFilePrefix, 'managed-');
-	assert.deepEqual(f.service.discoverFolderOverrides().map((entry) => entry.folder.path), ['Book A']);
+	f.frontmatter.set(config.path, { 'template-md': { 'keep.md': ['', '', false] } });
+	await f.service.writeFolderOverrides(f.book, {
+		templatePathsUnderGlobalFolder: true,
+		templateCanvas: { 'boards/blank.canvas': ['', '', false] },
+		templateBase: { 'catalog.base': ['', '', false] },
+	});
+	assert.deepEqual(f.frontmatter.get(config.path)?.['template-md'], { 'keep.md': ['', '', false] });
+	assert.deepEqual(f.frontmatter.get(config.path)?.['book-tabs-template-canvas'], { 'boards/blank.canvas': ['', '', false] });
+	assert.equal(f.frontmatter.get(config.path)?.['book-tabs-template-paths-under-global-folder'], true);
+	assert.ok(f.files.get('templates/boards/blank.canvas') instanceof TFile);
+	assert.equal(new TextDecoder().decode(f.binary.get('templates/boards/blank.canvas')), '{"nodes":[],"edges":[]}\n');
+	assert.equal(new TextDecoder().decode(f.binary.get('templates/catalog.base')), 'views: []\n');
+	assert.deepEqual(f.service.discoverFolderOverrides().map(entry => entry.folder.path), ['Book A']);
+});
+
+test('exact override paths are created as written and an existing template is never overwritten', async () => {
+	const f = fixture();
+	const custom = f.add(new TFolder('custom'));
+	const existing = f.add(new TFile('custom/blank.base'));
+	f.binary.set(existing.path, new TextEncoder().encode('existing').buffer);
+	await f.service.writeFolderOverrides(f.book, {
+		templatePathsUnderGlobalFolder: false,
+		templateBase: { 'custom/blank.base': ['', '', false] },
+	});
+	assert.ok(custom.children.includes(existing));
+	assert.equal(new TextDecoder().decode(f.binary.get(existing.path)), 'existing');
 });

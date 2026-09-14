@@ -12,6 +12,9 @@ export type ExcludedFileGroupLocation = 'next-to-current' | 'popout';
 export type OrderingDirection = 'ascending' | 'descending';
 export type ConfigNotePosition = 'top' | 'bottom';
 export type IndexMoveDecision = 'ask' | 'block' | 'merge-frontmatter' | 'append-body' | 'replace-frontmatter' | 'replace-content' | 'swap';
+export type TemplateFileType = 'md' | 'canvas' | 'base';
+export type TemplateRuleTuple = [dateFormat: string, prefix: string, applyFilenameConvention: boolean];
+export type TemplateRule = Record<string, TemplateRuleTuple>;
 
 export interface ScopeTabsSettings {
 	colorMode: ColorMode;
@@ -43,10 +46,10 @@ export interface ScopeTabsSettings {
 	indexMoveDecision: IndexMoveDecision;
 	excludedBookFolders: string[];
 	excludedFileGroupLocation: ExcludedFileGroupLocation;
-	templateFilePrefix: string;
-	templateFileDate: string;
-	templateFilePath: string;
-	templateFileAppliedTo: string;
+	templateFolder: string;
+	templateMd: TemplateRule;
+	templateCanvas: TemplateRule;
+	templateBase: TemplateRule;
 	forceUpdateLinks: boolean;
 	tabInsertDirection: TabInsertDirection;
 	bookNoteOpenMode: BookNoteOpenMode;

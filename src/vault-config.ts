@@ -7,11 +7,18 @@ import type { ScopeTabsSettings } from './types';
 const LOCAL_KEYS = new Set(['manualColors', 'manualTabTextColors', 'colorMode', 'selectedBookId', 'defaultStartupBookId', 'defaultStartupNotePath', 'bookNoteOpenModeOverrides', 'tabCustomCss', 'indexMoveDecision']);
 const ROOT_ONLY_KEYS = ['isFreshClone', 'freshCloneOpeningPath', 'createBookIndex', 'hideNewBookIndex'] as const;
 const OBSOLETE_ROOT_KEYS = ['showGridBoundaries', 'gridBoundaryThickness'] as const;
-const ROOT_KEY_ALIASES: Record<string, readonly string[]> = {
+const LEGACY_TEMPLATE_ROOT_KEYS = ['template-file-prefix', 'template-file-date', 'template-file-path', 'template-file-applied-To', 'template-file-applied-to'] as const;
+const LEGACY_TEMPLATE_SETTING_ALIASES: Record<string, readonly string[]> = {
 	templateFilePrefix: ['template-file-prefix'],
 	templateFileDate: ['template-file-date'],
 	templateFilePath: ['template-file-path'],
 	templateFileAppliedTo: ['template-file-applied-To', 'template-file-applied-to'],
+};
+const ROOT_KEY_ALIASES: Record<string, readonly string[]> = {
+	templateFolder: ['template-folder'],
+	templateMd: ['template-md'],
+	templateCanvas: ['template-canvas'],
+	templateBase: ['template-base'],
 };
 const sameValue = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 
@@ -53,6 +60,10 @@ export class VaultConfigService {
 			};
 			for (const [key, value] of Object.entries(settings)) {
 				if (!LOCAL_KEYS.has(key)) ensurePluginFrontmatter(fm, storageKey(key), value, context.ownedPlainKeys);
+			}
+			for (const key of LEGACY_TEMPLATE_ROOT_KEYS) {
+				delete fm[prefixedConfigKey(key)];
+				if (context.ownedPlainKeys.has(key)) delete fm[key];
 			}
 			for (const [key, value] of Object.entries(defaults)) ensurePluginFrontmatter(fm, key, value, context.ownedPlainKeys);
 		});
@@ -155,6 +166,26 @@ function logicalRootValues(raw: Record<string, unknown>): Record<string, unknown
 		delete values[key];
 		delete values[prefixedConfigKey(key)];
 	}
+	let hasLegacyTemplateSettings = false;
+	for (const [setting, candidates] of Object.entries(LEGACY_TEMPLATE_SETTING_ALIASES)) {
+		let found = false;
+		for (const candidate of candidates) {
+			const prefixed = prefixedConfigKey(candidate);
+			if (Object.prototype.hasOwnProperty.call(raw, prefixed)) {
+				values[setting] = raw[prefixed]; found = true; hasLegacyTemplateSettings = true; break;
+			}
+		}
+		if (!found) for (const candidate of candidates) if (Object.prototype.hasOwnProperty.call(raw, candidate)) {
+			values[setting] = raw[candidate]; hasLegacyTemplateSettings = true; break;
+		}
+		for (const candidate of candidates) {
+			delete values[candidate];
+			delete values[prefixedConfigKey(candidate)];
+		}
+	}
+	const hasNewTemplateMd = ['templateMd', 'template-md', prefixedConfigKey('templateMd'), prefixedConfigKey('template-md')]
+		.some(key => Object.prototype.hasOwnProperty.call(raw, key));
+	if (hasLegacyTemplateSettings && !hasNewTemplateMd) values.templateMd = legacyRootTemplateRule(values);
 	const logicalKeys = new Set([...Object.keys(DEFAULT_SETTINGS).filter(key => !LOCAL_KEYS.has(key)), ...ROOT_ONLY_KEYS]);
 	for (const key of logicalKeys) {
 		const candidates = ROOT_KEY_ALIASES[key] ?? [key];
@@ -174,6 +205,18 @@ function logicalRootValues(raw: Record<string, unknown>): Record<string, unknown
 		}
 	}
 	return values;
+}
+
+function legacyRootTemplateRule(values: Record<string, unknown>): ScopeTabsSettings['templateMd'] {
+	const applied = typeof values.templateFileAppliedTo === 'string' ? values.templateFileAppliedTo : 'md';
+	const extensions = applied.split(/[\s,]+/).map(value => value.replace(/^\./, '').toLowerCase());
+	if (!extensions.some(value => value === 'md' || value === '*')) return {};
+	const rawPath = typeof values.templateFilePath === 'string' ? values.templateFilePath : 'templates/example.md';
+	const path = rawPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').trim();
+	if (!path.toLowerCase().endsWith('.md')) return {};
+	const date = typeof values.templateFileDate === 'string' ? values.templateFileDate.trim() : 'DD.MM.YYYY';
+	const prefix = typeof values.templateFilePrefix === 'string' ? values.templateFilePrefix : '{{date}}_';
+	return { [path]: [date, prefix, true] };
 }
 
 function storageKey(key: string): string {

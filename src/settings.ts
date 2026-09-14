@@ -2,8 +2,8 @@ import { App, FuzzySuggestModal, TAbstractFile, TFile, TFolder, DropdownComponen
 import { isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
-import type { FolderTemplateOverrides } from './templates';
-import type { BookNoteOpenMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor } from './types';
+import { makeTemplateRule, ruleValues, type FolderTemplateOverrides, type TemplateRuleValues } from './templates';
+import type { BookNoteOpenMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor, TemplateFileType, TemplateRule } from './types';
 
 export class ScopeTabsSettingTab extends PluginSettingTab {
 
@@ -236,29 +236,39 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 
 	private renderTemplates(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Folder templates').setHeading();
-		new Setting(containerEl).setName('Filename prefix').setDesc('Added to new matching files. Use {{date}} to insert the formatted creation date.')
-			.addText(text => text.setValue(this.scopeTabs.settings.templateFilePrefix).onChange(async value => {
-				this.scopeTabs.settings.templateFilePrefix = value;
-				await this.scopeTabs.vaultConfig.set('templateFilePrefix', value);
+		new Setting(containerEl).setName('Default template folder')
+			.setDesc('Bare global template filenames are read from this vault folder. Paths that already contain folders remain exact. Default: templates.')
+			.addText(text => text.setPlaceholder(DEFAULT_SETTINGS.templateFolder).setValue(this.scopeTabs.settings.templateFolder).onChange(async value => {
+				this.scopeTabs.settings.templateFolder = value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '');
+				await this.scopeTabs.vaultConfig.set('templateFolder', this.scopeTabs.settings.templateFolder);
 			}));
-		new Setting(containerEl).setName('Date format').setDesc('Moment-style date format. A time suffix is added when the date-only filename already exists.')
-			.addText(text => text.setValue(this.scopeTabs.settings.templateFileDate).onChange(async value => {
-				this.scopeTabs.settings.templateFileDate = value || DEFAULT_SETTINGS.templateFileDate;
-				await this.scopeTabs.vaultConfig.set('templateFileDate', this.scopeTabs.settings.templateFileDate);
-			}));
-		new Setting(containerEl).setName('Template file').setDesc('Vault-relative file copied into a new matching file after it is named.')
-			.addText(text => text.setValue(this.scopeTabs.settings.templateFilePath).onChange(async value => {
-				this.scopeTabs.settings.templateFilePath = value.replace(/^\.\//, '');
-				await this.scopeTabs.vaultConfig.set('templateFilePath', this.scopeTabs.settings.templateFilePath);
-			}));
-		new Setting(containerEl).setName('Applied file types').setDesc('An inclusion list for new files created in a folder. Listed extensions receive the folder template filename treatment (prefix and date) and copied template contents; unlisted file types are left unchanged. Enter extensions without dots, separated by commas (for example: md, canvas, PNG), or * for every extension. Matching is case-insensitive. Default: md.')
-			.addText(text => text.setValue(this.scopeTabs.settings.templateFileAppliedTo).onChange(async value => {
-				this.scopeTabs.settings.templateFileAppliedTo = value || 'md';
-				await this.scopeTabs.vaultConfig.set('templateFileAppliedTo', this.scopeTabs.settings.templateFileAppliedTo);
-			}));
+		this.renderGlobalTemplateType(containerEl, 'Markdown', 'md', 'templateMd');
+		this.renderGlobalTemplateType(containerEl, 'Canvas', 'canvas', 'templateCanvas');
+		this.renderGlobalTemplateType(containerEl, 'Base', 'base', 'templateBase');
 		new Setting(containerEl).setName('Folder overrides')
-			.setDesc('Manage optional per-folder values. Each field inherits independently from its nearest parent or the vault defaults.')
+			.setDesc('Manage Markdown, canvas, and base rules inherited from the nearest parent or the vault defaults.')
 			.addButton(button => button.setButtonText('Manage overrides').onClick(() => new FolderTemplateOverridesModal(this.app, this.scopeTabs).open()));
+	}
+
+	private renderGlobalTemplateType(containerEl: HTMLElement, label: string, type: TemplateFileType, key: 'templateMd' | 'templateCanvas' | 'templateBase'): void {
+		new Setting(containerEl).setName(`${label} (.${type})`).setHeading();
+		const current = ruleValues(this.scopeTabs.settings[key]);
+		const draft: TemplateRuleValues = current ?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
+		const save = async (): Promise<void> => {
+			if (draft.templatePath && !draft.templatePath.toLowerCase().endsWith(`.${type}`)) return;
+			const rule = draft.templatePath ? makeTemplateRule(draft, type) : {};
+			this.scopeTabs.settings[key] = rule;
+			await this.scopeTabs.vaultConfig.set(key, rule);
+		};
+		new Setting(containerEl).setName('Template file')
+			.setDesc(`A bare filename uses the default template folder. A path with folders is vault-relative and exact. Leave the row empty to disable .${type} templates.`)
+			.addText(text => text.setPlaceholder(`example.${type}`).setValue(draft.templatePath).onChange(async value => { draft.templatePath = value; await save(); }));
+		new Setting(containerEl).setName('Filename prefix').setDesc('Applied only when the filename convention switch is on. Use {{date}} to insert the formatted date.')
+			.addText(text => text.setValue(draft.prefix).onChange(async value => { draft.prefix = value; await save(); }));
+		new Setting(containerEl).setName('Date format').setDesc('Used by {{date}}. A time suffix resolves date-only name collisions.')
+			.addText(text => text.setValue(draft.dateFormat).onChange(async value => { draft.dateFormat = value; await save(); }));
+		new Setting(containerEl).setName('Apply filename convention').setDesc('When off, the template contents are still copied but the new filename is unchanged.')
+			.addToggle(toggle => toggle.setValue(draft.applyFilenameConvention).onChange(async value => { draft.applyFilenameConvention = value; await save(); }));
 	}
 
 	private addFileExplorerOpenRadio(container: HTMLElement, value: FileExplorerOpenBehavior, labelText: string): void {
@@ -504,7 +514,9 @@ class FolderTemplateOverridesModal extends Modal {
 		this.render();
 	}
 	private folders(): TFolder[] {
-		return this.app.vault.getAllLoadedFiles().filter((entry): entry is TFolder => entry instanceof TFolder && !entry.isRoot())
+		const books = new Set(this.plugin.scopeResolver.listBooks().map(book => book.folderPath));
+		return this.app.vault.getAllLoadedFiles().filter((entry): entry is TFolder => entry instanceof TFolder && !entry.isRoot()
+			&& books.has(entry.path.split('/')[0] ?? ''))
 			.sort((left, right) => left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' }));
 	}
 	private render(): void {
@@ -523,25 +535,71 @@ class FolderTemplateOverridesModal extends Modal {
 		const folder = this.app.vault.getFolderByPath(this.selectedPath);
 		if (!folder) return;
 		const existing = this.plugin.templates.readFolderOverrides(folder);
+		const effective = this.plugin.templates.resolveForFolder(folder);
 		const draft: FolderTemplateOverrides = { ...existing };
-		const add = (name: string, description: string, key: keyof FolderTemplateOverrides) => new Setting(this.contentEl)
-			.setName(name).setDesc(description)
-			.addText(text => text.setPlaceholder('Inherit').setValue(existing[key] ?? '').onChange(value => { draft[key] = value || undefined; }));
-		add('Filename prefix', 'Optional. Use {{date}} for the configured date.', 'templateFilePrefix');
-		add('Date format', 'Optional Moment-style date format.', 'templateFileDate');
-		add('Template file', 'Optional vault-relative source path.', 'templateFilePath');
-		add('Applied file types', 'Inclusion list for new files in this folder. Listed extensions receive the template filename treatment and contents; unlisted types are unchanged. Enter extensions without dots, separated by commas, or * for every extension. The default is md.', 'templateFileAppliedTo');
-		new Setting(this.contentEl).setDesc('Blank values inherit independently from the nearest parent config or root defaults.')
+		let pathsUnderGlobal = existing.templatePathsUnderGlobalFolder ?? true;
+		new Setting(this.contentEl).setName('Keep override templates in the default template folder')
+			.setDesc('On by default. Custom paths are placed under the global template folder, even when they contain subfolders. This avoids accidentally creating visible books that contain only templates. Turn it off to use each path exactly as a vault-relative path.')
+			.addToggle(toggle => toggle.setValue(pathsUnderGlobal).onChange(value => { pathsUnderGlobal = value; draft.templatePathsUnderGlobalFolder = value; }));
+		this.addTemplateOverrideType('Markdown', 'md', 'templateMd', existing, effective.templateMd, draft);
+		this.addTemplateOverrideType('Canvas', 'canvas', 'templateCanvas', existing, effective.templateCanvas, draft);
+		this.addTemplateOverrideType('Base', 'base', 'templateBase', existing, effective.templateBase, draft);
+		new Setting(this.contentEl).setDesc('Disabled rows inherit the nearest rule. Enabled empty rows explicitly disable that file type for this folder.')
 			.addButton(button => button.setButtonText('Save overrides').setCta().onClick(async () => {
-				await this.plugin.templates.writeFolderOverrides(folder, draft);
-				this.render();
+				try {
+					draft.templatePathsUnderGlobalFolder = pathsUnderGlobal;
+					await this.plugin.templates.writeFolderOverrides(folder, draft);
+					new Notice('Template overrides saved. Missing template files were created.');
+					this.render();
+				} catch (error) {
+					new Notice(error instanceof Error ? error.message : 'Could not save template overrides.');
+				}
 			}));
 		const discovered = this.plugin.templates.discoverFolderOverrides();
 		if (discovered.length) {
 			new Setting(this.contentEl).setName('Folders with overrides').setHeading();
 			for (const entry of discovered) new Setting(this.contentEl).setName(entry.folder.path)
-				.setDesc(Object.entries(entry.overrides).map(([key, value]) => `${key}: ${value}`).join(' · '));
+				.setDesc((['templateMd', 'templateCanvas', 'templateBase'] as const)
+					.filter(key => entry.overrides[key] !== undefined)
+					.map(key => `${key.replace('template', '')}: ${ruleValues(entry.overrides[key]!)?.templatePath || 'disabled'}`).join(' · '));
 		}
+	}
+
+	private addTemplateOverrideType(
+		label: string,
+		type: TemplateFileType,
+		key: 'templateMd' | 'templateCanvas' | 'templateBase',
+		existing: FolderTemplateOverrides,
+		inheritedRule: TemplateRule,
+		draft: FolderTemplateOverrides,
+	): void {
+		let enabled = existing[key] !== undefined;
+		const inherited = ruleValues(inheritedRule) ?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
+		const values = ruleValues(existing[key] ?? inheritedRule) ?? { ...inherited };
+		const controls: Array<{ setDisabled(value: boolean): unknown }> = [];
+		const updateRule = (): void => {
+			draft[key] = enabled
+				? values.templatePath ? { [values.templatePath]: [values.dateFormat, values.prefix, values.applyFilenameConvention] } : {}
+				: undefined;
+		};
+		new Setting(this.contentEl).setName(`${label} (.${type})`).setDesc(enabled ? 'This folder has its own rule.' : 'Inherited values are shown in grey.')
+			.addToggle(toggle => toggle.setValue(enabled).onChange(value => {
+				enabled = value;
+				for (const control of controls) control.setDisabled(!enabled);
+				updateRule();
+			}));
+		new Setting(this.contentEl).setName('Template file').addText(text => {
+			controls.push(text); text.setValue(values.templatePath).setDisabled(!enabled).onChange(value => { values.templatePath = value; updateRule(); });
+		});
+		new Setting(this.contentEl).setName('Filename prefix').addText(text => {
+			controls.push(text); text.setValue(values.prefix).setDisabled(!enabled).onChange(value => { values.prefix = value; updateRule(); });
+		});
+		new Setting(this.contentEl).setName('Date format').addText(text => {
+			controls.push(text); text.setValue(values.dateFormat).setDisabled(!enabled).onChange(value => { values.dateFormat = value; updateRule(); });
+		});
+		new Setting(this.contentEl).setName('Apply filename convention').addToggle(toggle => {
+			controls.push(toggle); toggle.setValue(values.applyFilenameConvention).setDisabled(!enabled).onChange(value => { values.applyFilenameConvention = value; updateRule(); });
+		});
 	}
 }
 

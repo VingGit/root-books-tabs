@@ -18,7 +18,8 @@ const LOCATION_OWNED_KEYS = new Set([
 	'fileOrder', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'creation-date',
 	'isFreshClone', 'freshCloneOpeningPath', 'tabInsertDirection', 'bookNoteOpenMode', 'openBooksInExternalWindows',
 	'createBookIndex', 'hideNewBookIndex', 'configNotePosition', 'orderingDirection',
-	'excludedBookFolders', 'forceUpdateLinks', 'template-file-prefix', 'template-file-date', 'template-file-path',
+	'excludedBookFolders', 'forceUpdateLinks', 'template-folder', 'template-md', 'template-canvas', 'template-base',
+	'template-paths-under-global-folder', 'template-file-prefix', 'template-file-date', 'template-file-path',
 	'template-file-applied-To', 'template-file-applied-to',
 ]);
 

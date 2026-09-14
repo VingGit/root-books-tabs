@@ -17,3 +17,19 @@ test('excluded group ownership survives runtime-state migration', () => {
 	});
 	assert.deepEqual(state.groups.excluded, { kind: 'excluded', location: 'main' });
 });
+
+test('legacy Markdown template settings migrate into the per-type mapping', () => {
+	const settings = migrateSettings({
+		templateFilePrefix: 'note-',
+		templateFileDate: 'YYYY-MM-DD',
+		templateFilePath: 'templates/note.md',
+		templateFileAppliedTo: 'md, canvas',
+	});
+	assert.deepEqual(settings.templateMd, { 'templates/note.md': ['YYYY-MM-DD', 'note-', true] });
+	assert.deepEqual(settings.templateCanvas, {});
+});
+
+test('new template mappings reject mismatched extensions', () => {
+	const settings = migrateSettings({ templateCanvas: { 'wrong.md': ['', '', false] } });
+	assert.deepEqual(settings.templateCanvas, {});
+});

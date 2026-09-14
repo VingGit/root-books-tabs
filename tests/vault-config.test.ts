@@ -111,6 +111,28 @@ test('obsolete generated Grid boundary settings are removed without deleting an 
 	assert.equal('book-tabs-gridBoundaryThickness' in f.fm, false);
 });
 
+test('the original applied file types field is removed when its generated help proves ownership', async () => {
+	const content = '---\n# Comma-separated file extensions, or * for all supported file types.\ntemplate-file-applied-To: md\n---\nKeep this body';
+	const f = fixture({ 'template-file-applied-To': 'md' }, content);
+	await f.service.ensureRoot();
+	assert.equal('template-file-applied-To' in f.fm, false);
+	assert.equal('book-tabs-template-file-applied-To' in f.fm, false);
+});
+
+test('legacy portable template fields migrate into the new Markdown mapping', async () => {
+	const initial = {
+		'template-file-prefix': 'Legacy-{{date}}-',
+		'template-file-date': 'YYYY-MM-DD',
+		'template-file-path': 'custom/note.md',
+		'template-file-applied-To': 'md',
+	};
+	const f = fixture(initial);
+	await f.service.load();
+	assert.deepEqual(f.plugin.settings.templateMd, { 'custom/note.md': ['YYYY-MM-DD', 'Legacy-{{date}}-', true] });
+	await f.service.ensureRoot();
+	assert.deepEqual(managed(f.fm, 'template-md'), { 'custom/note.md': ['YYYY-MM-DD', 'Legacy-{{date}}-', true] });
+});
+
 test('rapid saves retain reversals and do not mark later unsaved edits persisted', async () => {
 	const f = fixture(); await f.service.ensureRoot();
 	f.plugin.settings.showBookLabel = false;

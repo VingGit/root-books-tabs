@@ -44,11 +44,11 @@ const HELP: Record<string, string> = {
 	orderingDirection: 'descending shows newest date-sorted items first; ascending reverses the ordinary item order.',
 	configNotePosition: 'top or bottom pins every folder config note outside fileOrder.',
 	forceUpdateLinks: 'True keeps Obsidian automatic internal-link updates enabled.',
-	'template-file-prefix': 'Prefix for newly created matching files. Use {{date}} to insert the formatted date.',
-	'template-file-date': 'Moment-style creation-date format. Name collisions add a time suffix.',
-	'template-file-path': 'Vault-relative template file copied into newly created matching files.',
-	'template-file-applied-To': 'Inclusion list for new files: matching extensions receive the template filename and contents; unlisted types are unchanged. Comma-separated without dots, or * for all. Default md.',
-	'template-file-applied-to': 'Inclusion list for new files: matching extensions receive the template filename and contents; unlisted types are unchanged. Comma-separated without dots, or * for all. Default md.',
+	'template-folder': 'Default vault folder for bare global template filenames and, by default, every folder override template.',
+	'template-md': 'Markdown template mapping: template.md: [date format, prefix, apply filename convention]. Empty disables Markdown templating.',
+	'template-canvas': 'Canvas template mapping: template.canvas: [date format, prefix, apply filename convention]. Empty disables Canvas templating.',
+	'template-base': 'Base template mapping: template.base: [date format, prefix, apply filename convention]. Empty disables Base templating.',
+	'template-paths-under-global-folder': 'True resolves this folder config\'s template paths under the vault default template folder; false uses exact vault-relative paths.',
 };
 
 const LEGACY_HELP: Record<string, readonly string[]> = {
@@ -61,6 +61,17 @@ const LEGACY_HELP: Record<string, readonly string[]> = {
 	orderingEnabled: ['True after this book has been prepared for metadata ordering.'],
 	showGridBoundaries: ['True shows theme-aware base-cell boundaries while a full Grid contains overflow books.'],
 	gridBoundaryThickness: ['Grid overflow boundary thickness in pixels, from 1 to 8.'],
+	'template-file-prefix': ['Prefix for newly created matching files. Use {{date}} to insert the formatted date.'],
+	'template-file-date': ['Moment-style creation-date format. Name collisions add a time suffix.'],
+	'template-file-path': ['Vault-relative template file copied into newly created matching files.'],
+	'template-file-applied-To': [
+		'Inclusion list for new files: matching extensions receive the template filename and contents; unlisted types are unchanged. Comma-separated without dots, or * for all. Default md.',
+		'Comma-separated file extensions, or * for all supported file types.',
+	],
+	'template-file-applied-to': [
+		'Inclusion list for new files: matching extensions receive the template filename and contents; unlisted types are unchanged. Comma-separated without dots, or * for all. Default md.',
+		'Comma-separated file extensions, or * for all supported file types.',
+	],
 };
 
 const hasOwn = (value: Record<string, unknown>, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
