@@ -1789,6 +1789,10 @@ function wrapTabGroupForNestedSplit(
 	reference: WorkspaceLeaf,
 	direction: 'vertical' | 'horizontal',
 ): (() => void) | null {
+	// The first overflow creates the isolated base-cell split. Once it exists,
+	// let Obsidian flatten later same-axis splits into that cell so its books
+	// remain equal siblings instead of an increasingly lopsided binary chain.
+	if (reference.view.containerEl.closest('.scope-tabs-grid-base-cell')) return null;
 	const group: unknown = reference.parent;
 	if (!isUnknownRecord(group)) return null;
 	const parent = group.parent;
