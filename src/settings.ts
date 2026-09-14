@@ -5,6 +5,22 @@ import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, 
 import { makeTemplateRule, ruleValues, type FolderTemplateOverrides, type TemplateRuleValues } from './templates';
 import type { BookNoteOpenMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor, TemplateFileType, TemplateRule } from './types';
 
+function createTemplateDrawer(container: HTMLElement, open: boolean): { content: HTMLElement; setOpen: (value: boolean) => void } {
+	const drawer = container.createDiv({ cls: 'scope-tabs-template-drawer' });
+	const content = drawer.createDiv({ cls: 'scope-tabs-template-drawer-content' });
+	const setOpen = (value: boolean): void => {
+		drawer.toggleClass('is-open', value);
+		drawer.setAttribute('aria-hidden', String(!value));
+	};
+	setOpen(open);
+	return { content, setOpen };
+}
+
+function retainToggleFocus(toggleEl: HTMLElement): void {
+	const ownerWindow = toggleEl.ownerDocument.defaultView ?? window;
+	ownerWindow.requestAnimationFrame(() => toggleEl.focus({ preventScroll: true }));
+}
+
 export class ScopeTabsSettingTab extends PluginSettingTab {
 
 
@@ -14,6 +30,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	private gridOverflowControl: HTMLElement | null = null;
 	private gridDimensionsSection: HTMLElement | null = null;
 	private gridRefillTimer: number | null = null;
+	private suppressConfigRefreshUntil = 0;
 
 	constructor(app: App, private readonly scopeTabs: ScopeTabsPlugin) {
 		super(app, scopeTabs);
@@ -200,6 +217,13 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			}));
 	}
 
+	refreshForConfigChange(): void {
+		if (Date.now() < this.suppressConfigRefreshUntil) return;
+		const active = this.containerEl.ownerDocument.activeElement;
+		if (active && this.containerEl.contains(active)) return;
+		this.update();
+	}
+
 	private renderOrdering(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Ordering').setHeading();
 		new Setting(containerEl)
@@ -251,23 +275,38 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	}
 
 	private renderGlobalTemplateType(containerEl: HTMLElement, label: string, type: TemplateFileType, key: 'templateMd' | 'templateCanvas' | 'templateBase'): void {
-		new Setting(containerEl).setName(`${label} (.${type})`).setHeading();
 		const current = ruleValues(this.scopeTabs.settings[key]);
-		const draft: TemplateRuleValues = current ?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
+		const fallback = ruleValues(DEFAULT_SETTINGS[key])
+			?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
+		const draft: TemplateRuleValues = { ...(current ?? fallback) };
+		let enabled = current !== null;
 		const save = async (): Promise<void> => {
-			if (draft.templatePath && !draft.templatePath.toLowerCase().endsWith(`.${type}`)) return;
-			const rule = draft.templatePath ? makeTemplateRule(draft, type) : {};
+			if (enabled && draft.templatePath && !draft.templatePath.toLowerCase().endsWith(`.${type}`)) return;
+			const rule = enabled && draft.templatePath ? makeTemplateRule(draft, type) : {};
 			this.scopeTabs.settings[key] = rule;
+			this.suppressConfigRefreshUntil = Date.now() + 2000;
 			await this.scopeTabs.vaultConfig.set(key, rule);
 		};
-		new Setting(containerEl).setName('Template file')
+		let setDrawerOpen = (_value: boolean): void => {};
+		new Setting(containerEl)
+			.setName(`${label} (.${type})`)
+			.setDesc(`Use the global .${type} template and filename settings.`)
+			.addToggle(toggle => toggle.setValue(enabled).onChange(async value => {
+				enabled = value;
+				setDrawerOpen(value);
+				retainToggleFocus(toggle.toggleEl);
+				await save();
+			}));
+		const drawer = createTemplateDrawer(containerEl, enabled);
+		setDrawerOpen = drawer.setOpen;
+		new Setting(drawer.content).setName('Template file')
 			.setDesc(`A bare filename uses the default template folder. A path with folders is vault-relative and exact. Leave the row empty to disable .${type} templates.`)
 			.addText(text => text.setPlaceholder(`example.${type}`).setValue(draft.templatePath).onChange(async value => { draft.templatePath = value; await save(); }));
-		new Setting(containerEl).setName('Filename prefix').setDesc('Applied only when the filename convention switch is on. Use {{date}} to insert the formatted date.')
+		new Setting(drawer.content).setName('Filename prefix').setDesc('Applied only when the filename convention switch is on. Use {{date}} to insert the formatted date.')
 			.addText(text => text.setValue(draft.prefix).onChange(async value => { draft.prefix = value; await save(); }));
-		new Setting(containerEl).setName('Date format').setDesc('Used by {{date}}. A time suffix resolves date-only name collisions.')
+		new Setting(drawer.content).setName('Date format').setDesc('Used by {{date}}. A time suffix resolves date-only name collisions.')
 			.addText(text => text.setValue(draft.dateFormat).onChange(async value => { draft.dateFormat = value; await save(); }));
-		new Setting(containerEl).setName('Apply filename convention').setDesc('When off, the template contents are still copied but the new filename is unchanged.')
+		new Setting(drawer.content).setName('Apply filename convention').setDesc('When off, the template contents are still copied but the new filename is unchanged.')
 			.addToggle(toggle => toggle.setValue(draft.applyFilenameConvention).onChange(async value => { draft.applyFilenameConvention = value; await save(); }));
 	}
 
@@ -576,29 +615,32 @@ class FolderTemplateOverridesModal extends Modal {
 		let enabled = existing[key] !== undefined;
 		const inherited = ruleValues(inheritedRule) ?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
 		const values = ruleValues(existing[key] ?? inheritedRule) ?? { ...inherited };
-		const controls: Array<{ setDisabled(value: boolean): unknown }> = [];
 		const updateRule = (): void => {
 			draft[key] = enabled
 				? values.templatePath ? { [values.templatePath]: [values.dateFormat, values.prefix, values.applyFilenameConvention] } : {}
 				: undefined;
 		};
-		new Setting(this.contentEl).setName(`${label} (.${type})`).setDesc(enabled ? 'This folder has its own rule.' : 'Inherited values are shown in grey.')
+		let setDrawerOpen = (_value: boolean): void => {};
+		new Setting(this.contentEl).setName(`${label} (.${type})`).setDesc('Override the inherited template and filename settings for this file type.')
 			.addToggle(toggle => toggle.setValue(enabled).onChange(value => {
 				enabled = value;
-				for (const control of controls) control.setDisabled(!enabled);
+				setDrawerOpen(value);
+				retainToggleFocus(toggle.toggleEl);
 				updateRule();
 			}));
-		new Setting(this.contentEl).setName('Template file').addText(text => {
-			controls.push(text); text.setValue(values.templatePath).setDisabled(!enabled).onChange(value => { values.templatePath = value; updateRule(); });
+		const drawer = createTemplateDrawer(this.contentEl, enabled);
+		setDrawerOpen = drawer.setOpen;
+		new Setting(drawer.content).setName('Template file').setDesc(`Inherited: ${inherited.templatePath || 'disabled'}`).addText(text => {
+			text.setPlaceholder(inherited.templatePath).setValue(values.templatePath).onChange(value => { values.templatePath = value; updateRule(); });
 		});
-		new Setting(this.contentEl).setName('Filename prefix').addText(text => {
-			controls.push(text); text.setValue(values.prefix).setDisabled(!enabled).onChange(value => { values.prefix = value; updateRule(); });
+		new Setting(drawer.content).setName('Filename prefix').setDesc(`Inherited: ${inherited.prefix || 'empty'}`).addText(text => {
+			text.setPlaceholder(inherited.prefix).setValue(values.prefix).onChange(value => { values.prefix = value; updateRule(); });
 		});
-		new Setting(this.contentEl).setName('Date format').addText(text => {
-			controls.push(text); text.setValue(values.dateFormat).setDisabled(!enabled).onChange(value => { values.dateFormat = value; updateRule(); });
+		new Setting(drawer.content).setName('Date format').setDesc(`Inherited: ${inherited.dateFormat || 'empty'}`).addText(text => {
+			text.setPlaceholder(inherited.dateFormat).setValue(values.dateFormat).onChange(value => { values.dateFormat = value; updateRule(); });
 		});
-		new Setting(this.contentEl).setName('Apply filename convention').addToggle(toggle => {
-			controls.push(toggle); toggle.setValue(values.applyFilenameConvention).setDisabled(!enabled).onChange(value => { values.applyFilenameConvention = value; updateRule(); });
+		new Setting(drawer.content).setName('Apply filename convention').setDesc(`Inherited: ${inherited.applyFilenameConvention ? 'on' : 'off'}`).addToggle(toggle => {
+			toggle.setValue(values.applyFilenameConvention).onChange(value => { values.applyFilenameConvention = value; updateRule(); });
 		});
 	}
 }

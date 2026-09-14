@@ -592,6 +592,35 @@ body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
 	display: none;
 }
 
+.scope-tabs-template-drawer {
+	display: grid;
+	grid-template-rows: 0fr;
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
+	transition: grid-template-rows 160ms ease, opacity 120ms ease, visibility 0s linear 160ms;
+}
+
+.scope-tabs-template-drawer.is-open {
+	grid-template-rows: 1fr;
+	opacity: 1;
+	visibility: visible;
+	pointer-events: auto;
+	transition-delay: 0s;
+}
+
+.scope-tabs-template-drawer-content {
+	min-height: 0;
+	margin-left: var(--size-4-4);
+	overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.scope-tabs-template-drawer {
+		transition: none;
+	}
+}
+
 .scope-tabs-grid-overflow {
 	display: inline-flex;
 	align-items: center;

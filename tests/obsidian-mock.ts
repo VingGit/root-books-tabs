@@ -20,6 +20,9 @@ export function getFrontMatterInfo(text: string): { exists: boolean; frontmatter
 	return { exists: Boolean(match), frontmatter: match?.[1] ?? '', contentStart: match?.[0].length ?? 0 };
 }
 export class Notice { constructor(_message: string) {} }
+export class FileView { file: TFile | null = null; }
+export class WorkspaceLeaf {}
+export class WorkspaceWindow {}
 export class Modal {
 	contentEl!: HTMLElement;
 	titleEl!: HTMLElement;

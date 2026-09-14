@@ -866,7 +866,7 @@ export class BookNavigationController {
 		}
 
 		const targetExcluded = this.plugin.scopeResolver.resolveExcludedFile(file);
-		if (targetExcluded) return this.routeExcludedOpen(sourceLeaf, file, openState, original);
+		if (targetExcluded) return this.routeExcludedOpen(sourceLeaf, file, openState, original, fromFileExplorer ? 'focused-tab' : undefined);
 		const targetBook = this.plugin.scopeResolver.resolveFile(file);
 		if (!targetBook) return original.call(destinationLeaf, file, openState);
 		if (fromFileExplorer && this.plugin.settings.fileExplorerOpenBehavior === 'book-instance') {
@@ -922,10 +922,11 @@ export class BookNavigationController {
 		file: TFile,
 		openState: OpenViewState | undefined,
 		original: WorkspaceLeaf['openFile'],
+		mode?: BookNoteOpenMode,
 	): Promise<void> {
 		const existing = this.getCanonicalExcludedLeaf();
 		if (existing) {
-			await this.openOrReuseInExcludedGroup(existing, file, openState, original);
+			await this.openOrReuseInExcludedGroup(existing, file, openState, original, mode);
 			this.focusPopoutWindow(existing);
 			return;
 		}
@@ -937,8 +938,9 @@ export class BookNavigationController {
 		file: TFile,
 		openState: OpenViewState | undefined,
 		original: WorkspaceLeaf['openFile'],
+		mode: BookNoteOpenMode = this.plugin.settings.bookNoteOpenMode,
 	): Promise<void> {
-		if (this.plugin.settings.bookNoteOpenMode === 'same-tab') {
+		if (mode === 'same-tab') {
 			this.routing = true;
 			try {
 				await original.call(referenceLeaf, file, openState);
@@ -970,7 +972,7 @@ export class BookNavigationController {
 			this.registerExcludedGroup(next);
 			await original.call(next, file, openState);
 			this.applyTabInsertDirection(referenceLeaf, next);
-			if (this.plugin.settings.bookNoteOpenMode === 'focused-tab') this.focusLeaf(next);
+			if (mode === 'focused-tab') this.focusLeaf(next);
 			else {
 				this.plugin.app.workspace.setActiveLeaf(previousInGroup, { focus: false });
 				if (previous) this.plugin.app.workspace.setActiveLeaf(previous, { focus: true });

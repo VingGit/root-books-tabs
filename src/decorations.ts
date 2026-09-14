@@ -632,8 +632,9 @@ export class DecorationController {
 				const cloneItem = cloneTitle?.closest<HTMLElement>('.nav-file, .nav-folder');
 				const path = cloneItem ? getExplorerItemPath(cloneItem) : '';
 				if (!cloneTitle || !path) return;
-				const activate = event.type === 'click' || event instanceof KeyboardEvent;
+				const activate = event.type === 'pointerdown' || event instanceof KeyboardEvent;
 				if (activate) {
+					if (event instanceof MouseEvent && event.button !== 0) return;
 					event.preventDefault();
 					event.stopPropagation();
 					if (cloneItem?.hasClass('nav-folder')) {
@@ -675,7 +676,7 @@ export class DecorationController {
 					metaKey: mouseEvent.metaKey,
 				}));
 			};
-			excludedBody.addEventListener('click', forwardExcludedTreeEvent);
+			excludedBody.addEventListener('pointerdown', forwardExcludedTreeEvent);
 			excludedBody.addEventListener('contextmenu', forwardExcludedTreeEvent);
 			excludedBody.addEventListener('keydown', (event: KeyboardEvent) => {
 				if (event.key === 'Enter' || event.key === ' ') forwardExcludedTreeEvent(event);

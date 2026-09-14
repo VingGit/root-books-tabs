@@ -188,7 +188,7 @@ export default class ScopeTabsPlugin extends Plugin {
 					.then(() => this.linkMaintenance.enforce())
 					.catch(console.error);
 			}
-			if (file.name === `${this.settings.configFileBaseName}.md`) this.settingTab?.update();
+			if (file.name === `${this.settings.configFileBaseName}.md`) this.settingTab?.refreshForConfigChange();
 			if (this.settings.colorMode === 'frontmatter') this.decorations.refresh();
 		}));
 		if (shouldOpenDefault) {
@@ -253,7 +253,7 @@ export default class ScopeTabsPlugin extends Plugin {
 			await this.persistState();
 		}
 		this.navigation.reconcileGroupRegistry();
-		this.settingTab?.update();
+		this.settingTab?.refreshForConfigChange();
 		await this.refreshColorConfiguration(false);
 	}
 
