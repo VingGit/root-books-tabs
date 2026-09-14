@@ -1,4 +1,6 @@
-import { MarkdownView, Menu, Notice, WorkspaceLeaf, WorkspaceWindow, setIcon, setTooltip, type Vault } from 'obsidian';
+import { MarkdownView, Menu, Notice, TAbstractFile, TFolder, WorkspaceLeaf, WorkspaceWindow, setIcon, setTooltip, type Vault } from 'obsidian';
+import { ORDERING_TYPES } from './book-order';
+import { CreateBookModal } from './settings';
 import { getLeafFile } from './leaf-file';
 import type ScopeTabsPlugin from './main';
 import type { BookNoteOpenMode, BookScope, CardinalDirection } from './types';
@@ -21,8 +23,13 @@ interface ExplorerDecoration {
 	modelReady: boolean;
 	toggle: HTMLElement;
 	bar: HTMLElement;
+	direction: HTMLButtonElement;
 	closeAll: HTMLElement;
 	openAnother: HTMLElement;
+	reorder: HTMLButtonElement;
+	header: HTMLElement;
+	excludedPanel: HTMLElement;
+	excludedBody: HTMLElement;
 }
 
 interface ExplorerTreeItemAdapter {
@@ -31,12 +38,15 @@ interface ExplorerTreeItemAdapter {
 	path: string;
 	collapse: () => void;
 	expand: () => void;
+	isCollapsed: () => boolean | null;
+	refreshExpanded: () => void;
+	syncChildren: () => void;
 }
 
 interface ExplorerTreeAdapter {
 	rootItems: ExplorerTreeItemAdapter[];
 	itemsByPath: Map<string, ExplorerTreeItemAdapter>;
-	reorder: (paths: string[]) => void;
+	reorder: (paths: string[], external?: { paths: readonly string[]; container: HTMLElement }) => void;
 	restoreOrder: () => void;
 	invalidate: () => void;
 }
@@ -65,12 +75,25 @@ export class DecorationController {
 	private collapsedSecondaryBookIds = new Set<string>();
 	private explorerBookDropTargetEl: HTMLElement | null = null;
 	private sortingTabs = false;
+	private orderingBookId: string | null = null;
+	private orderingPending = false;
+	private stopOrdering: (() => void) | null = null;
+	private explorerSortRestorers = new Map<object, () => void>();
+	private explorersShowingExcluded = new Set<HTMLElement>();
+	private excludedExpandedBeforeBookModeOff = new Map<HTMLElement, Set<string>>();
 
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
+
+	clearGridBaseCellMarkers(): void {
+		for (const doc of this.getWorkspaceDocuments()) {
+			doc.querySelectorAll('.scope-tabs-grid-base-cell').forEach(el => el.classList.remove('scope-tabs-grid-base-cell'));
+		}
+	}
 
 	refresh(): void {
 		if (!this.plugin.scopeResolver.hasMultipleBooks()) {
 			this.cleanup();
+			this.syncBookDragDocuments();
 			return;
 		}
 		this.refreshCustomCss();
@@ -81,6 +104,9 @@ export class DecorationController {
 	}
 
 	cleanup(): void {
+		this.exitOrdering();
+		for (const restore of this.explorerSortRestorers.values()) restore();
+		this.explorerSortRestorers.clear();
 		if (this.explorerRefreshFrame !== null) window.cancelAnimationFrame(this.explorerRefreshFrame);
 		if (this.tabDecorationRefreshFrame !== null) window.cancelAnimationFrame(this.tabDecorationRefreshFrame);
 		if (this.primaryPromotionTimer !== null) window.clearTimeout(this.primaryPromotionTimer);
@@ -89,6 +115,7 @@ export class DecorationController {
 		this.primaryPromotionTimer = null;
 		this.explorerRefreshQueued = false;
 		this.previousOpenBookIds.clear();
+		this.excludedExpandedBeforeBookModeOff.clear();
 		this.instancePickerMenu?.hide();
 		this.instancePickerMenu = null;
 		this.instancePickerBookId = null;
@@ -97,6 +124,7 @@ export class DecorationController {
 		this.clearBookButtonLongPresses();
 		this.clearExplorerBookDrag();
 		this.collapsedSecondaryBookIds.clear();
+		this.explorersShowingExcluded.clear();
 		for (const removeListeners of this.bookDragDocuments.values()) removeListeners();
 		this.bookDragDocuments.clear();
 		const docs = new Set<Document>([...this.getWorkspaceDocuments(), ...this.customStyleSheets.keys()]);
@@ -106,12 +134,13 @@ export class DecorationController {
 		}
 		this.customStyleSheets.clear();
 		for (const doc of docs) {
+			doc.querySelectorAll('.scope-tabs-grid-base-cell').forEach(el => el.classList.remove('scope-tabs-grid-base-cell'));
 			doc.querySelectorAll('.scope-tabs-book-menu-tab, .scope-tabs-book-mode-toggle, .scope-tabs-book-switcher, .scope-tabs-book-subtree-controls, .scope-tabs-book-actions').forEach((el) => el.remove());
-			doc.querySelectorAll<HTMLElement>('.scope-tabs-book-label, .scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary, .scope-tabs-book-root-title-hidden').forEach((el) => {
+			doc.querySelectorAll<HTMLElement>('.scope-tabs-book-label, .scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary, .scope-tabs-book-mode-excluded, .scope-tabs-book-mode-excluded-hidden, .scope-tabs-book-root-title-hidden').forEach((el) => {
 				if (el.hasClass('scope-tabs-book-label')) el.remove();
 				else {
 					el.style.removeProperty('order');
-					el.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-root-title-hidden']);
+					el.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-mode-excluded', 'scope-tabs-book-mode-excluded-hidden', 'scope-tabs-book-root-title-hidden']);
 				}
 			});
 			doc.querySelectorAll<HTMLElement>('.scope-tabs-color-tab').forEach((el) => {
@@ -151,7 +180,7 @@ export class DecorationController {
 		this.plugin.app.workspace.iterateAllLeaves((leaf) => {
 			leaf.view.containerEl.removeAttribute('data-scope-tabs-book');
 			leaf.view.containerEl.style.removeProperty('--scope-tabs-book-color');
-			if (leaf.view instanceof MarkdownView) leaf.view.contentEl.querySelector(':scope > .scope-tabs-book-label')?.remove();
+			leaf.view.containerEl.querySelector(':scope > .scope-tabs-book-label')?.remove();
 			const book = this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault));
 			if (!book) return;
 			const color = this.plugin.colors.getColor(book);
@@ -175,12 +204,14 @@ export class DecorationController {
 	}
 
 	private decorateLeaf(leaf: WorkspaceLeaf, book: BookScope, color: string): void {
-		leaf.view.containerEl.setAttr('data-scope-tabs-book', book.id);
-		leaf.view.containerEl.style.setProperty('--scope-tabs-book-color', color);
-		if (!(leaf.view instanceof MarkdownView)) return;
-		const content = leaf.view.contentEl;
-		content.querySelector(':scope > .scope-tabs-book-label')?.remove();
-		const label = content.createDiv({ cls: 'scope-tabs-book-label', prepend: true });
+		const container = leaf.view.containerEl;
+		container.setAttr('data-scope-tabs-book', book.id);
+		container.style.setProperty('--scope-tabs-book-color', color);
+		container.querySelector(':scope > .scope-tabs-book-label')?.remove();
+		const label = container.createDiv({ cls: 'scope-tabs-book-label' });
+		const content = container.querySelector<HTMLElement>(':scope > .view-content')
+			?? (leaf.view instanceof MarkdownView ? leaf.view.contentEl : null);
+		if (content?.parentElement === container) container.insertBefore(label, content);
 		label.style.setProperty('--scope-tabs-book-color', color);
 		if (this.plugin.settings.showBookLabel) label.createSpan({ cls: 'scope-tabs-book-label-name', text: book.name });
 		else label.addClass('scope-tabs-book-label-navigation-only');
@@ -304,10 +335,26 @@ export class DecorationController {
 			const dragLeave = (event: DragEvent) => {
 				if (event.relatedTarget === null) this.clearBookDropTarget();
 			};
+			const contextMenu = (event: MouseEvent) => {
+				if (event.defaultPrevented || this.orderingBookId) return;
+				const target = getEventElement(event);
+				if (!target) return;
+				let clicked: WorkspaceLeaf | null = null;
+				this.plugin.app.workspace.iterateAllLeaves(leaf => {
+					if (leaf.view instanceof MarkdownView && leaf.view.getMode() === 'preview' && leaf.view.contentEl.contains(target)) clicked = leaf;
+				});
+				if (!clicked) return;
+				event.preventDefault();
+				const menu = new Menu();
+				this.plugin.frontmatterActions.addMenuItems(menu, clicked);
+				menu.showAtMouseEvent(event);
+			};
 			doc.addEventListener('dragover', dragOver, true);
+			doc.addEventListener('contextmenu', contextMenu);
 			doc.addEventListener('drop', drop, true);
 			doc.addEventListener('dragleave', dragLeave, true);
 			this.bookDragDocuments.set(doc, () => {
+				doc.removeEventListener('contextmenu', contextMenu);
 				doc.removeEventListener('dragover', dragOver, true);
 				doc.removeEventListener('drop', drop, true);
 				doc.removeEventListener('dragleave', dragLeave, true);
@@ -419,7 +466,7 @@ export class DecorationController {
 		const menu = new Menu();
 		menu.addItem((item) => item.setTitle(book.name).setIcon('book-open').setDisabled(true));
 		menu.addItem((item) => item.setTitle('Note opening').setIcon('arrow-left-right').setDisabled(true));
-		const override = this.plugin.settings.bookNoteOpenModeOverrides[book.id] ?? null;
+		const override = this.plugin.navigation.getBookNoteOpenModeOverride(book);
 		const globalLabel = getBookNoteOpenModeLabel(this.plugin.settings.bookNoteOpenMode);
 		this.addBookNoteOpenModeItem(menu, book, null, `Use global (${globalLabel})`, override === null);
 		this.addBookNoteOpenModeItem(menu, book, 'same-tab', 'Same tab', override === 'same-tab');
@@ -463,9 +510,8 @@ export class DecorationController {
 		menu.addItem((item) => item
 			.setTitle(title)
 			.setChecked(checked)
-			.onClick(() => {
-				if (mode) this.plugin.settings.bookNoteOpenModeOverrides[book.id] = mode;
-				else delete this.plugin.settings.bookNoteOpenModeOverrides[book.id];
+			.onClick(async () => {
+				await this.plugin.navigation.setBookNoteOpenMode(book, mode);
 				this.plugin.navigation.resetBookHistories();
 				void this.plugin.saveSettings();
 			}));
@@ -522,22 +568,31 @@ export class DecorationController {
 	}
 
 	private disposeExplorerDecoration(root: HTMLElement, decoration: ExplorerDecoration, restoreOrder: boolean): void {
+		if (this.orderingBookId) this.exitOrdering();
+		this.explorersShowingExcluded.delete(root);
+		this.excludedExpandedBeforeBookModeOff.delete(root);
 		decoration.observer.disconnect();
 		decoration.removeRoutingListeners();
 		const tree = getExplorerTreeAdapter(this.plugin, root);
 		const itemEls = new Set<HTMLElement>(tree?.rootItems.map((item) => item.el) ?? []);
-		root.querySelectorAll<HTMLElement>('.scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary').forEach((item) => itemEls.add(item));
+		root.querySelectorAll<HTMLElement>('.scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary, .scope-tabs-book-mode-excluded, .scope-tabs-book-mode-excluded-hidden').forEach((item) => itemEls.add(item));
 		for (const item of itemEls) {
 			item.style.removeProperty('order');
-			item.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary']);
+			item.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-mode-excluded', 'scope-tabs-book-mode-excluded-hidden']);
 			item.querySelector<HTMLElement>(':scope > .nav-folder-title')?.removeClass('scope-tabs-book-root-title-hidden');
 			item.querySelector(':scope > .scope-tabs-book-subtree-controls')?.remove();
 		}
 		root.querySelectorAll('.scope-tabs-book-subtree-controls').forEach((controls) => controls.remove());
+		root.querySelectorAll('.scope-tabs-empty-book').forEach(el => el.remove());
 		if (restoreOrder) tree?.restoreOrder();
+		for (const child of Array.from(decoration.excludedBody.children)) decoration.files.appendChild(child);
 		tree?.invalidate();
 		decoration.toggle.remove();
 		decoration.bar.remove();
+		decoration.direction.remove();
+		decoration.reorder.remove();
+		decoration.header.remove();
+		decoration.excludedPanel.remove();
 		decoration.bookActions.remove();
 		root.removeClass('scope-tabs-book-mode');
 		this.explorerDecorations.delete(root);
@@ -560,19 +615,51 @@ export class DecorationController {
 			});
 			setIcon(toggle, 'book-open-check');
 			toggle.addEventListener('click', () => this.toggleBookMode());
-			const bar = root.createEl('button', {
+			const excludedPanel = root.createEl('fieldset', { cls: 'scope-tabs-excluded-panel', attr: { 'aria-hidden': 'true' } });
+			const excludedLegend = excludedPanel.createEl('legend', { cls: 'scope-tabs-excluded-panel-legend' });
+			excludedLegend.createSpan({ text: 'Excluded folders' });
+			const hideExcluded = excludedLegend.createEl('button', { cls: 'scope-tabs-excluded-panel-close clickable-icon', attr: { type: 'button', 'aria-label': 'Hide excluded folders' } });
+			setIcon(hideExcluded, 'x');
+			const excludedBody = excludedPanel.createDiv({ cls: 'scope-tabs-excluded-panel-body' });
+			filesParent.insertBefore(excludedPanel, files);
+			const header = root.createDiv({ cls: 'scope-tabs-book-header' });
+			filesParent.insertBefore(header, files);
+			hideExcluded.addEventListener('click', () => this.setExcludedFoldersVisible(root, false));
+			const bar = header.createEl('button', {
 				cls: 'scope-tabs-book-switcher',
 				attr: { type: 'button', 'aria-haspopup': 'menu' },
 			});
-			filesParent.insertBefore(bar, files);
-			bar.addEventListener('click', (event: MouseEvent) => this.showBookSwitcher(event));
+			const reorder = header.createEl('button', { cls: 'scope-tabs-order-button clickable-icon', attr: { type: 'button', 'aria-label': 'Reorder this book' } });
+			setIcon(reorder, 'list-ordered');
+			header.insertBefore(reorder, bar);
+			const direction = header.createEl('button', { cls: 'scope-tabs-order-direction clickable-icon', attr: { type: 'button' } });
+			header.insertBefore(direction, bar);
+			direction.addEventListener('click', () => {
+				if (!this.orderingBookId) return;
+				const next = this.plugin.settings.orderingDirection === 'descending' ? 'ascending' : 'descending';
+				this.plugin.settings.orderingDirection = next;
+				void this.plugin.vaultConfig.set('orderingDirection', next).then(() => this.refreshExplorer());
+			});
+			reorder.addEventListener('click', () => {
+				if (this.orderingBookId) { this.exitOrdering(); this.refreshExplorer(); }
+				else void this.enterOrdering(root).catch((error: unknown) => { console.error(error); new Notice('Could not prepare book ordering.'); });
+			});
+			bar.addEventListener('click', () => {
+				if (!this.orderingBookId) return;
+				const folder = this.plugin.app.vault.getFolderByPath(this.orderingBookId);
+				if (!folder) return;
+				const current = this.plugin.bookOrder.getType(folder);
+				const next = ORDERING_TYPES[(ORDERING_TYPES.indexOf(current) + 1) % ORDERING_TYPES.length]!;
+				void this.plugin.bookOrder.setType(this.orderingBookId, next).then(() => this.refreshExplorer());
+			});
+			bar.addEventListener('click', (event: MouseEvent) => { if (!this.orderingBookId) this.showBookSwitcher(event); });
 			const bookActions = filesParent.createDiv({ cls: 'scope-tabs-book-actions' });
 			filesParent.insertBefore(bookActions, files);
 			const openAnother = bookActions.createEl('button', {
 				cls: 'scope-tabs-open-book-button',
 				attr: { type: 'button', 'aria-haspopup': 'menu', 'aria-label': 'Open another book' },
 			});
-			openAnother.createSpan({ cls: 'scope-tabs-open-book-default', text: '+ Open another book' });
+			openAnother.createSpan({ cls: 'scope-tabs-open-book-default', text: 'Open another existing book, or create a new one' });
 			openAnother.createSpan({ cls: 'scope-tabs-open-book-hover', text: 'Shift-click opens another book in a pop-out window instead.' });
 			openAnother.addEventListener('click', (event: MouseEvent) => {
 				event.stopPropagation();
@@ -595,9 +682,12 @@ export class DecorationController {
 				if (!current) return;
 				const liveActions = root.querySelector<HTMLElement>('.nav-buttons-container');
 				const liveFiles = root.querySelector<HTMLElement>('.nav-files-container');
-				if (liveActions !== current.actions || liveFiles !== current.files || !current.modelReady) this.queueExplorerRefresh();
+				const tree = this.explorersShowingExcluded.has(root) ? getExplorerTreeAdapter(this.plugin, root) : null;
+				const excludedTreeMoved = this.explorersShowingExcluded.has(root)
+					&& this.plugin.scopeResolver.listExcludedFolders().some(folder => tree?.itemsByPath.get(folder.id)?.el.parentElement !== current.excludedBody);
+				if (liveActions !== current.actions || liveFiles !== current.files || !current.modelReady || excludedTreeMoved) this.queueExplorerRefresh();
 			});
-			observer.observe(root, { childList: true });
+			observer.observe(root, { childList: true, subtree: true });
 			const markExplorerOpen = (event: Event) => {
 				const title = getEventElement(event)?.closest<HTMLElement>('.nav-file-title');
 				if (!title || !files.contains(title)) return;
@@ -615,7 +705,7 @@ export class DecorationController {
 				files.removeEventListener('click', click, true);
 				files.removeEventListener('keydown', keydown, true);
 			};
-			decoration = { observer, removeRoutingListeners, actions, bookActions, files, filesParent, modelReady: false, toggle, bar, closeAll, openAnother };
+			decoration = { observer, removeRoutingListeners, actions, bookActions, files, filesParent, modelReady: false, toggle, bar, closeAll, openAnother, reorder, direction, header, excludedPanel, excludedBody };
 			this.explorerDecorations.set(root, decoration);
 			window.setTimeout(() => {
 				const current = this.explorerDecorations.get(root);
@@ -629,6 +719,8 @@ export class DecorationController {
 	private applyBookMode(root: HTMLElement): void {
 		const books = this.plugin.scopeResolver.listBooks();
 		const booksById = new Map(books.map((book) => [book.id, book]));
+		const excludedPaths = this.plugin.scopeResolver.listExcludedFolders().map(folder => folder.id);
+		const excludedPathSet = new Set(excludedPaths);
 		const bookOrder = this.plugin.navigation.getBookOrder();
 		const openBookIds = this.plugin.navigation.getOpenBookIds();
 		const selected = books.find((book) => book.id === this.plugin.settings.selectedBookId) ?? books[0];
@@ -640,10 +732,25 @@ export class DecorationController {
 		const decoration = this.explorerDecorations.get(root);
 		if (!decoration) return;
 		const tree = getExplorerTreeAdapter(this.plugin, root);
+		this.applyExplorerOrdering(root);
 		decoration.modelReady = tree !== null;
-		decoration.bar.setText(selected.name);
-		decoration.bar.setAttr('aria-label', `Selected book: ${selected.name}. Choose another book.`);
+		const folder = this.plugin.app.vault.getFolderByPath(selected.id);
+		decoration.bar.setText(this.orderingBookId && folder ? `Ordering type: ${this.plugin.bookOrder.getType(folder)}` : selected.name);
+		decoration.bar.setAttr('aria-label', this.orderingBookId ? `${decoration.bar.textContent}. Click to cycle ordering type.` : `Selected book: ${selected.name}. Choose another book.`);
+		decoration.bar.toggleClass('scope-tabs-order-cycle', !!this.orderingBookId);
+		if (this.orderingBookId) decoration.bar.removeAttribute('aria-haspopup');
+		else decoration.bar.setAttr('aria-haspopup', 'menu');
 		decoration.bar.toggle(this.plugin.settings.bookModeEnabled);
+		decoration.reorder.toggle(this.plugin.settings.bookModeEnabled && tree !== null);
+		decoration.reorder.setAttr('aria-pressed', String(this.orderingBookId === selected.id));
+		setIcon(decoration.reorder, this.orderingBookId ? 'x' : 'list-ordered');
+		decoration.reorder.setAttr('aria-label', this.orderingBookId ? 'Exit ordering mode' : 'Reorder this book');
+		decoration.reorder.toggleClass('scope-tabs-order-exit', !!this.orderingBookId);
+		decoration.direction.toggle(this.plugin.settings.bookModeEnabled && !!this.orderingBookId);
+		const descending = this.plugin.settings.orderingDirection === 'descending';
+		setIcon(decoration.direction, descending ? 'arrow-down-wide-narrow' : 'arrow-up-narrow-wide');
+		decoration.direction.setAttr('aria-label', descending ? 'Descending order. Change to ascending.' : 'Ascending order. Change to descending.');
+		decoration.direction.setAttr('aria-pressed', String(descending));
 		decoration.bar.toggleClass('scope-tabs-book-switcher-colored', this.plugin.settings.colorBookSwitcher);
 		decoration.bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(selected));
 		const visibleBookIds = new Set(openBookIds);
@@ -655,7 +762,7 @@ export class DecorationController {
 		for (const item of getExplorerRootItems(root)) rootItems.set(getExplorerItemPath(item), item);
 		for (const el of new Set(rootItems.values())) {
 			el.style.removeProperty('order');
-			el.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-root-title-hidden']);
+			el.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-mode-excluded', 'scope-tabs-book-mode-excluded-hidden', 'scope-tabs-book-root-title-hidden']);
 			el.querySelector<HTMLElement>(':scope > .nav-folder-title')?.removeClass('scope-tabs-book-root-title-hidden');
 		}
 		if (this.plugin.settings.bookModeEnabled && !tree) {
@@ -666,7 +773,14 @@ export class DecorationController {
 			return;
 		}
 		if (!this.plugin.settings.bookModeEnabled) {
+			if (this.explorersShowingExcluded.has(root)) {
+				const expanded = new Set(excludedPaths.filter(path => tree?.itemsByPath.get(path)?.isCollapsed() === false));
+				if (expanded.size > 0) this.excludedExpandedBeforeBookModeOff.set(root, expanded);
+			}
 			for (const item of rootItems.values()) item.querySelector(':scope > .scope-tabs-book-subtree-controls')?.remove();
+			decoration.excludedPanel.removeClass('is-open');
+			decoration.excludedPanel.setAttr('aria-hidden', 'true');
+			for (const child of Array.from(decoration.excludedBody.children)) decoration.files.appendChild(child);
 			tree?.restoreOrder();
 			tree?.invalidate();
 			decoration.bookActions.remove();
@@ -678,11 +792,25 @@ export class DecorationController {
 		for (const book of books) {
 			if (book.id !== selected.id && openBookIds.has(book.id) && !secondaryPaths.includes(book.id)) secondaryPaths.push(book.id);
 		}
-		tree?.reorder([selected.id, ...secondaryPaths]);
+		const showExcluded = this.explorersShowingExcluded.has(root) && !this.orderingBookId;
+		decoration.excludedPanel.toggleClass('is-open', showExcluded);
+		decoration.excludedPanel.setAttr('aria-hidden', String(!showExcluded));
+		if (showExcluded) for (const path of excludedPaths) tree?.itemsByPath.get(path)?.syncChildren();
+		tree?.reorder([selected.id, ...secondaryPaths], showExcluded ? { paths: excludedPaths, container: decoration.excludedBody } : undefined);
+		const expandedBeforeToggle = this.excludedExpandedBeforeBookModeOff.get(root);
+		if (showExcluded && expandedBeforeToggle) {
+			this.excludedExpandedBeforeBookModeOff.delete(root);
+			for (const path of expandedBeforeToggle) tree?.itemsByPath.get(path)?.refreshExpanded();
+			tree?.invalidate();
+		}
 		let selectedItem: HTMLElement | null = null;
 		for (const [path, item] of rootItems) {
 			const subtreeControls = item.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-controls');
-			if (path === selected.folderPath && item.hasClass('nav-folder')) {
+			if (excludedPathSet.has(path) && item.hasClass('nav-folder')) {
+				subtreeControls?.remove();
+				item.addClass('scope-tabs-book-mode-excluded');
+				item.toggleClass('scope-tabs-book-mode-excluded-hidden', !showExcluded);
+			} else if (path === selected.folderPath && item.hasClass('nav-folder')) {
 				selectedItem = item;
 				subtreeControls?.remove();
 				item.addClass('scope-tabs-book-mode-selected');
@@ -702,7 +830,7 @@ export class DecorationController {
 				item.addClass('scope-tabs-book-mode-hidden');
 			}
 		}
-		const showOpenAnother = books.some((book) => !visibleBookIds.has(book.id));
+		const showOpenAnother = true;
 		const showCloseAll = secondaryPaths.length > 0;
 		if (selectedItem) {
 			if (selectedItem.lastElementChild !== decoration.bookActions) selectedItem.appendChild(decoration.bookActions);
@@ -710,9 +838,278 @@ export class DecorationController {
 			decoration.closeAll.toggle(showCloseAll);
 			decoration.bookActions.toggle(showOpenAnother || showCloseAll);
 		} else {
-			decoration.bookActions.toggle(false);
+			decoration.filesParent.insertBefore(decoration.bookActions, decoration.files);
+			decoration.bookActions.toggle(true);
 		}
+		this.renderEmptyBook(root, decoration, selected);
 		tree?.invalidate();
+	}
+
+	private renderEmptyBook(root: HTMLElement, decoration: ExplorerDecoration, book: BookScope): void {
+		root.querySelector('.scope-tabs-empty-book')?.remove();
+		const notes = this.plugin.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(`${book.id}/`));
+		if (notes.some(file => !this.plugin.bookIgnore.isHidden(file)) || this.plugin.bookIgnore.revealedBooks.has(book.id)) return;
+		const empty = decoration.filesParent.createDiv({ cls: 'scope-tabs-empty-book' });
+		decoration.filesParent.insertBefore(empty, decoration.files);
+		empty.createEl('button', { text: 'Create your first page for this book' }).addEventListener('click', () => {
+			void (async () => {
+				let suffix = 0;
+				let path = `${book.id}/Untitled.md`;
+				while (this.plugin.app.vault.getAbstractFileByPath(path)) path = `${book.id}/Untitled ${++suffix}.md`;
+				const file = await this.plugin.app.vault.create(path, '');
+				await this.plugin.navigation.activateBook(book, file);
+				this.refreshExplorer();
+			})();
+		});
+		if (notes.length) empty.createEl('button', { text: 'Show hidden pages for this session' }).addEventListener('click', () => {
+			this.plugin.bookIgnore.revealedBooks.add(book.id); this.refreshExplorer();
+		});
+	}
+
+	private exitOrdering(): void {
+		this.stopOrdering?.();
+		this.stopOrdering = null;
+		this.orderingBookId = null;
+	}
+
+	private async enterOrdering(root: HTMLElement): Promise<void> {
+		const book = this.plugin.scopeResolver.listBooks().find(book => book.id === this.plugin.settings.selectedBookId);
+		if (!book || !this.explorerDecorations.has(root) || this.orderingPending) return;
+		this.orderingPending = true;
+		try {
+			await this.plugin.bookOrder.prepare(book);
+		} finally {
+			this.orderingPending = false;
+		}
+		if (!root.isConnected || !this.plugin.settings.bookModeEnabled) return;
+		this.ensureExplorerDecoration(root);
+		const decoration = this.explorerDecorations.get(root);
+		if (!decoration || !decoration.files.isConnected || !decoration.header.isConnected) return;
+		this.exitOrdering();
+		this.orderingBookId = book.id;
+		const doc = root.ownerDocument;
+		const view: unknown = this.plugin.app.workspace.getLeavesOfType('file-explorer').find(leaf => leaf.view.containerEl === root)?.view;
+		const models = isUnknownRecord(view) && isUnknownRecord(view.fileItems) ? view.fileItems : {};
+		const folderStates = new Map<Record<string, unknown>, boolean>();
+		const belongs = (path: string) => path === book.id || path.startsWith(`${book.id}/`);
+		const collapse = (model: Record<string, unknown>, value: boolean) => {
+			if (typeof model.setCollapsed !== 'function') return;
+			try { Reflect.apply(model.setCollapsed, model, [value, false]); } catch { /* Optional native folder state adapter. */ }
+		};
+		for (const model of Object.values(models)) {
+			if (!isUnknownRecord(model) || !(model.file instanceof TFolder) || !belongs(model.file.path) || typeof model.collapsed !== 'boolean') continue;
+			folderStates.set(model, model.collapsed); collapse(model, false);
+		}
+		const highlight = doc.body.createDiv({ cls: 'scope-tabs-order-highlight' });
+		highlight.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
+		root.addClass('scope-tabs-ordering');
+		root.style.setProperty('--scope-tabs-order-color', this.plugin.colors.getColor(book));
+		const rowPath = (row: Element | null) => {
+			const item = row?.closest<HTMLElement>('.nav-file, .nav-folder'); return item ? getExplorerItemPath(item) : '';
+		};
+		const configName = `${this.plugin.settings.configFileBaseName}.md`;
+		const isFixedConfig = (path: string) => path.split('/').pop() === configName;
+		const markFixedConfigs = () => {
+			for (const row of Array.from(decoration.files.querySelectorAll<HTMLElement>('.nav-file-title'))) {
+				const path = rowPath(row);
+				const fixed = belongs(path) && isFixedConfig(path);
+				if (fixed) {
+					if (!row.hasClass('scope-tabs-order-fixed')) row.addClass('scope-tabs-order-fixed');
+					if (row.getAttribute('aria-disabled') !== 'true') row.setAttr('aria-disabled', 'true');
+				} else {
+					if (row.hasClass('scope-tabs-order-fixed')) row.removeClass('scope-tabs-order-fixed');
+					if (row.hasAttribute('aria-disabled')) row.removeAttribute('aria-disabled');
+				}
+			}
+		};
+		const position = () => {
+			const header = decoration.header.getBoundingClientRect(), files = decoration.files.getBoundingClientRect();
+			const actions = decoration.bookActions.getBoundingClientRect();
+			const left = Math.min(header.left, files.left), right = Math.max(header.right, files.right);
+			const bottom = Math.min(files.bottom, Math.max(header.bottom, actions.top - 2));
+			highlight.style.left = `${left}px`; highlight.style.top = `${header.top}px`;
+			highlight.style.width = `${right - left}px`; highlight.style.height = `${Math.max(0, bottom - header.top)}px`;
+			markFixedConfigs();
+		};
+		const inside = (event: MouseEvent) => {
+			const rect = highlight.getBoundingClientRect();
+			return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+		};
+		const insidePoint = (clientX: number, clientY: number) => {
+			const rect = highlight.getBoundingClientRect();
+			return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+		};
+		position();
+		let positionFrame: number | null = null;
+		const queuePosition = () => {
+			if (positionFrame !== null) return;
+			positionFrame = window.requestAnimationFrame(() => { positionFrame = null; position(); });
+		};
+		const resize = new ResizeObserver(queuePosition); resize.observe(decoration.files); resize.observe(decoration.bookActions); resize.observe(decoration.header);
+		const mutations = new MutationObserver(queuePosition); mutations.observe(decoration.files, { childList: true, subtree: true });
+		// Native virtual folders animate their height without resizing the scroll container.
+		const settled = () => queuePosition();
+		decoration.files.addEventListener('transitionend', settled);
+		doc.addEventListener('scroll', queuePosition, true); doc.defaultView?.addEventListener('resize', queuePosition);
+		let sourcePath: string | null = null, sourceRow: HTMLElement | null = null, targetRow: HTMLElement | null = null;
+		let dragCollapsedModel: Record<string, unknown> | null = null;
+		let origin: { x: number; y: number } | null = null, dragging = false, expandTimer: number | null = null;
+		const rowAt = (event: MouseEvent) => inside(event) ? doc.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.nav-file-title, .nav-folder-title') ?? null : null;
+		const isArrow = (target: Element | null) => !!target?.closest('.nav-folder-collapse-indicator, .collapse-icon') && belongs(rowPath(target));
+		const controls = (target: Element | null) => !!target?.closest('.scope-tabs-book-header') && root.contains(target);
+		const clearTarget = () => {
+			targetRow?.removeClass('scope-tabs-order-hover');
+			targetRow?.removeAttribute('data-scope-tabs-order-drop');
+			targetRow?.style.removeProperty('--scope-tabs-order-drop-indent');
+			targetRow = null;
+		};
+		const cancelDrag = () => {
+			if (dragCollapsedModel) collapse(dragCollapsedModel, false);
+			dragCollapsedModel = null;
+			sourceRow?.removeClass('scope-tabs-order-selected'); sourceRow = null; sourcePath = null; origin = null; dragging = false; clearTarget();
+			if (expandTimer !== null) window.clearTimeout(expandTimer); expandTimer = null;
+		};
+		const click = (event: MouseEvent) => {
+			const element = getEventElement(event);
+			if (controls(element) || inside(event) && isArrow(element)) return;
+			event.preventDefault(); event.stopImmediatePropagation();
+			if (!inside(event)) { this.exitOrdering(); this.refreshExplorer(); }
+		};
+		const key = (event: KeyboardEvent) => {
+			if (controls(getEventElement(event)) && (event.key === 'Enter' || event.key === ' ' || event.key === 'Tab')) return;
+			event.preventDefault(); event.stopImmediatePropagation();
+			if (event.key === 'Escape') { this.exitOrdering(); this.refreshExplorer(); }
+		};
+		const wheel = (event: WheelEvent) => {
+			if (inside(event)) return;
+			event.preventDefault(); event.stopImmediatePropagation();
+		};
+		const touchmove = (event: TouchEvent) => {
+			const touch = event.touches.item(0);
+			if (touch && insidePoint(touch.clientX, touch.clientY)) return;
+			event.preventDefault(); event.stopImmediatePropagation();
+		};
+		const start = (event: PointerEvent) => {
+			const element = getEventElement(event);
+			if (controls(element) || inside(event) && isArrow(element)) return;
+			event.preventDefault(); event.stopImmediatePropagation();
+			if (!inside(event)) return;
+			const row = rowAt(event), path = rowPath(row);
+			if (event.button !== 0 || !belongs(path) || path === book.id) return;
+			if (isFixedConfig(path)) {
+				new Notice(`${configName} stays with its folder and cannot be reordered.`);
+				return;
+			}
+			sourcePath = path; sourceRow = row; sourceRow?.addClass('scope-tabs-order-selected');
+			origin = { x: event.clientX, y: event.clientY }; dragging = false;
+		};
+		const placement = (event: MouseEvent, row: HTMLElement): 'before' | 'after' | 'inside' => {
+			const bounds = row.getBoundingClientRect(), ratio = (event.clientY - bounds.top) / bounds.height;
+			return this.plugin.app.vault.getFolderByPath(rowPath(row)) && ratio >= 0.25 && ratio <= 0.75 ? 'inside' : ratio < 0.5 ? 'before' : 'after';
+		};
+		const over = (event: PointerEvent) => {
+			if (!dragging && origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 5) {
+				dragging = true;
+				const sourceModel = sourcePath ? models[sourcePath] : null;
+				if (isUnknownRecord(sourceModel) && sourceModel.file instanceof TFolder) {
+					dragCollapsedModel = sourceModel;
+					collapse(sourceModel, true);
+				}
+			}
+			let row = rowAt(event);
+			const hoveredPath = rowPath(row);
+			if (!belongs(hoveredPath) || (sourcePath && (hoveredPath === sourcePath || hoveredPath.startsWith(`${sourcePath}/`)))) row = null;
+			if (row !== targetRow) {
+				clearTarget(); targetRow = row; row?.addClass('scope-tabs-order-hover');
+				const content = row?.querySelector<HTMLElement>('.nav-file-title-content, .nav-folder-title-content');
+				if (row && content) row.style.setProperty('--scope-tabs-order-drop-indent', `${Math.max(0, Math.round(content.getBoundingClientRect().left - row.getBoundingClientRect().left))}px`);
+				if (expandTimer !== null) window.clearTimeout(expandTimer);
+				if (dragging && row?.hasClass('nav-folder-title')) {
+					const model = models[rowPath(row)];
+					if (isUnknownRecord(model)) expandTimer = window.setTimeout(() => collapse(model, false), 600);
+				}
+			}
+			if (!sourcePath) return;
+			event.preventDefault(); event.stopImmediatePropagation();
+			if (dragging && row) row.setAttr('data-scope-tabs-order-drop', placement(event, row));
+		};
+		const drop = (event: PointerEvent) => {
+			const source = sourcePath, row = rowAt(event), path = rowPath(row), moved = dragging;
+			cancelDrag(); if (!source) return;
+			event.preventDefault(); event.stopImmediatePropagation();
+			if (!moved || !row || !inside(event) || !belongs(path)) return;
+			void this.plugin.bookOrder.move(book.id, source, path, placement(event, row)).then(() => { this.refreshExplorer(); position(); }).catch((error: unknown) => {
+				console.error(error); new Notice('Could not move this item. Check for an existing file with the same name.');
+			});
+		};
+		doc.addEventListener('click', click, true); doc.addEventListener('dblclick', click, true); doc.addEventListener('contextmenu', click, true);
+		doc.addEventListener('keydown', key, true); doc.addEventListener('pointerdown', start, true); doc.addEventListener('pointermove', over, true); doc.addEventListener('pointerup', drop, true); doc.addEventListener('pointercancel', cancelDrag, true);
+		doc.addEventListener('wheel', wheel, { capture: true, passive: false }); doc.addEventListener('touchmove', touchmove, { capture: true, passive: false });
+		this.stopOrdering = () => {
+			decoration.files.removeEventListener('transitionend', settled);
+			if (positionFrame !== null) window.cancelAnimationFrame(positionFrame);
+			positionFrame = null;
+			cancelDrag(); resize.disconnect(); mutations.disconnect(); highlight.remove(); root.removeClass('scope-tabs-ordering'); root.style.removeProperty('--scope-tabs-order-color');
+			decoration.files.querySelectorAll<HTMLElement>('.scope-tabs-order-fixed').forEach(row => { row.removeClass('scope-tabs-order-fixed'); row.removeAttribute('aria-disabled'); });
+			doc.removeEventListener('scroll', queuePosition, true); doc.defaultView?.removeEventListener('resize', queuePosition);
+			doc.removeEventListener('click', click, true); doc.removeEventListener('dblclick', click, true); doc.removeEventListener('contextmenu', click, true);
+			doc.removeEventListener('keydown', key, true); doc.removeEventListener('pointerdown', start, true); doc.removeEventListener('pointermove', over, true); doc.removeEventListener('pointerup', drop, true); doc.removeEventListener('pointercancel', cancelDrag, true);
+			doc.removeEventListener('wheel', wheel, true); doc.removeEventListener('touchmove', touchmove, true);
+			for (const [model, collapsed] of folderStates) collapse(model, collapsed);
+		};
+		this.refreshExplorer(); queuePosition();
+	}
+
+	/** Optional virtual-tree adapter: preserve other plugins' filters, and restore our exact patch. */
+	private applyExplorerOrdering(root: HTMLElement): void {
+		const view: unknown = this.plugin.app.workspace.getLeavesOfType('file-explorer').find((leaf) => leaf.view.containerEl === root)?.view;
+		if (!isUnknownRecord(view) || typeof view.getSortedFolderItems !== 'function') return;
+		if (!this.explorerSortRestorers.has(view)) {
+			const original = view.getSortedFolderItems;
+			const plugin = this.plugin;
+			const patched = function(this: unknown, folder: unknown, ...args: unknown[]): unknown {
+				const result: unknown = Reflect.apply(original, this, [folder, ...args]);
+				if (!(folder instanceof TFolder) || folder.isRoot() || !Array.isArray(result)) return result;
+				const bookId = folder.path.split('/')[0]!;
+				if (!plugin.scopeResolver.listBooks().some(book => book.id === bookId)) return result;
+				let items: unknown[] = result as unknown[];
+				if (!plugin.settings.bookModeEnabled) {
+					return [...items].sort((a: unknown, b: unknown) => isUnknownRecord(a) && isUnknownRecord(b) && a.file instanceof TAbstractFile && b.file instanceof TAbstractFile
+						? pinConfigNote(plugin, folder, a.file, b.file) : 0);
+				}
+				if (plugin.bookIgnore.revealedBooks.has(bookId) && isUnknownRecord(view.fileItems)) {
+					const models = view.fileItems;
+					items = folder.children.map(child => models[child.path]).filter(Boolean);
+				} else items = items.filter(item => !isUnknownRecord(item) || !(item.file instanceof TAbstractFile) || !plugin.bookIgnore.isHidden(item.file));
+				if (!plugin.bookOrder.isEnabled(bookId)) {
+					return [...items].sort((a: unknown, b: unknown) => isUnknownRecord(a) && isUnknownRecord(b) && a.file instanceof TAbstractFile && b.file instanceof TAbstractFile
+						? pinConfigNote(plugin, folder, a.file, b.file) : 0);
+				}
+				return [...items].sort((a: unknown, b: unknown) => isUnknownRecord(a) && isUnknownRecord(b) && a.file instanceof TAbstractFile && b.file instanceof TAbstractFile
+					? plugin.bookOrder.compare(a.file, b.file, plugin.bookOrder.getType(folder)) : 0);
+			};
+			view.getSortedFolderItems = patched;
+			this.explorerSortRestorers.set(view, () => {
+				if (view.getSortedFolderItems === patched) view.getSortedFolderItems = original;
+				this.refreshFolderOrder(view);
+			});
+		}
+		this.refreshFolderOrder(view);
+	}
+
+	private refreshFolderOrder(view: Record<string, unknown>): void {
+		if (!isUnknownRecord(view.fileItems) || typeof view.getSortedFolderItems !== 'function') return;
+		for (const item of Object.values(view.fileItems)) {
+			if (!isUnknownRecord(item) || !(item.file instanceof TFolder) || item.file.isRoot()) continue;
+			const children = item.vChildren;
+			if (!isUnknownRecord(children) || typeof children.setChildren !== 'function') continue;
+			try {
+				const sorted: unknown = Reflect.apply(view.getSortedFolderItems, view, [item.file]);
+				if (!Array.isArray(sorted)) continue;
+				if (Array.isArray(children.children) && children.children.length === sorted.length && children.children.every((child, index) => child === sorted[index])) continue;
+				Reflect.apply(children.setChildren, children, [sorted]);
+			} catch { /* Native ordering remains the fallback on unsupported explorer versions. */ }
+		}
 	}
 
 	private ensureSubtreeControls(folder: HTMLElement, book: BookScope): void {
@@ -983,6 +1380,7 @@ export class DecorationController {
 				item.setTitle(title).setChecked(selected).onClick(() => void this.selectBook(book));
 			});
 		}
+		this.addExcludedFoldersToggle(menu, getEventElement(event)?.closest<HTMLElement>('.workspace-leaf-content[data-type="file-explorer"]') ?? null);
 		menu.showAtMouseEvent(event);
 	}
 
@@ -990,8 +1388,9 @@ export class DecorationController {
 		const openBookIds = this.plugin.navigation.getOpenBookIds();
 		if (this.plugin.settings.selectedBookId) openBookIds.add(this.plugin.settings.selectedBookId);
 		const books = this.plugin.scopeResolver.listBooks().filter((book) => !openBookIds.has(book.id));
-		if (books.length === 0) return;
 		const menu = new Menu();
+		menu.addItem(item => item.setTitle('Create a new book').setIcon('folder-plus').onClick(() => new CreateBookModal(this.plugin.app, this.plugin).open()));
+		menu.addSeparator();
 		for (const book of books) {
 			menu.addItem((item) => item
 				.setTitle(book.name)
@@ -1001,13 +1400,47 @@ export class DecorationController {
 					this.refreshExplorer();
 				}));
 		}
+		this.addExcludedFoldersToggle(menu, getEventElement(event)?.closest<HTMLElement>('.workspace-leaf-content[data-type="file-explorer"]') ?? null);
 		menu.showAtMouseEvent(event);
 	}
 
+	private addExcludedFoldersToggle(menu: Menu, root: HTMLElement | null): void {
+		const excluded = this.plugin.scopeResolver.listExcludedFolders();
+		if (!excluded.length || !root) return;
+		menu.addSeparator();
+		menu.addItem(item => item
+			.setTitle(`Show ${excluded.length} excluded folder${excluded.length === 1 ? '' : 's'}`)
+			.setChecked(this.explorersShowingExcluded.has(root))
+			.onClick(() => this.toggleExcludedFolders(root)));
+	}
+
+	private toggleExcludedFolders(root: HTMLElement): void {
+		this.setExcludedFoldersVisible(root, !this.explorersShowingExcluded.has(root));
+	}
+
+	private setExcludedFoldersVisible(root: HTMLElement, visible: boolean): void {
+		if (visible) this.explorersShowingExcluded.add(root);
+		else this.explorersShowingExcluded.delete(root);
+		this.applyBookMode(root);
+	}
+
 	private async selectBook(book: BookScope): Promise<void> {
+		const previousBook = this.plugin.scopeResolver.listBooks()
+			.find(candidate => candidate.id === this.plugin.settings.selectedBookId);
+		if (previousBook?.id !== book.id && this.plugin.navigation.getOpenBookIds().has(book.id)) {
+			this.plugin.settings.selectedBookId = book.id;
+			this.plugin.navigation.setPrimaryBook(book.id);
+			await this.plugin.saveSettings();
+			this.refreshExplorer();
+			await this.plugin.navigation.activateBook(book);
+			return;
+		}
+		if (!this.plugin.app.vault.getMarkdownFiles().some(file => file.path.startsWith(`${book.id}/`))) {
+			this.plugin.settings.selectedBookId = book.id;
+			this.plugin.navigation.setPrimaryBook(book.id);
+			await this.plugin.saveSettings(); this.refreshExplorer(); return;
+		}
 		if (this.plugin.settings.mainBookSwitchBehavior === 'close-previous') {
-			const previousBook = this.plugin.scopeResolver.listBooks()
-				.find((candidate) => candidate.id === this.plugin.settings.selectedBookId);
 			if (previousBook?.id === book.id) {
 				await this.plugin.navigation.activateBook(book);
 				return;
@@ -1136,6 +1569,13 @@ function getExplorerItemPath(item: HTMLElement): string {
 	return item.dataset.path ?? item.getAttribute('data-path') ?? title?.dataset.path ?? title?.getAttribute('data-path') ?? '';
 }
 
+function pinConfigNote(plugin: ScopeTabsPlugin, folder: TFolder, left: TAbstractFile, right: TAbstractFile): number {
+	const configPath = `${folder.path}/${plugin.settings.configFileBaseName}.md`;
+	const leftConfig = left.path === configPath, rightConfig = right.path === configPath;
+	if (leftConfig === rightConfig) return 0;
+	return leftConfig === (plugin.settings.configNotePosition !== 'bottom') ? -1 : 1;
+}
+
 /**
  * Obsidian's file explorer is virtualized: off-screen item elements are intentionally detached,
  * and its logical `vChildren` order—not DOM/CSS order—drives later reattachment. There is no
@@ -1169,14 +1609,26 @@ function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): Exp
 		return null;
 	}
 	if (!Array.isArray(sortedValues)) return null;
+	const nativeValues: unknown[] = [];
+	for (const value of sortedValues as unknown[]) nativeValues.push(value);
+	const displayValues = [...nativeValues];
+	// Ignore can omit an entire selected book. Reuse its existing model for the
+	// empty/reveal state, while retaining the original native list for restoration.
+	if (plugin.settings.bookModeEnabled && plugin.settings.selectedBookId) {
+		const selectedModel: unknown = fileItems[plugin.settings.selectedBookId];
+		if (isUnknownRecord(selectedModel) && !displayValues.includes(selectedModel)) displayValues.push(selectedModel);
+	}
 	const rootItems: ExplorerTreeItemAdapter[] = [];
-	for (const value of sortedValues) {
+	for (const value of displayValues) {
 		if (!isUnknownRecord(value)) return null;
 		const file = value.file;
 		const el = value.el;
 		if (!isUnknownRecord(file) || typeof file.path !== 'string' || !isHtmlElement(el, root.ownerDocument)) return null;
 		const setCollapsed = value.setCollapsed;
 		const childrenEl = isHtmlElement(value.childrenEl, root.ownerDocument) ? value.childrenEl : null;
+		const folder = plugin.app.vault.getFolderByPath(file.path);
+		const nestedVirtualChildren = isUnknownRecord(value.vChildren) ? value.vChildren : null;
+		const setNestedChildren = nestedVirtualChildren?.setChildren;
 		rootItems.push({
 			identity: value,
 			el,
@@ -1203,17 +1655,41 @@ function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): Exp
 					// Expansion is optional when Obsidian changes its internal explorer model.
 				}
 			},
+			isCollapsed: () => typeof value.collapsed === 'boolean' ? value.collapsed : null,
+			refreshExpanded: () => {
+				if (value.collapsed !== false || typeof setCollapsed !== 'function') return;
+				try {
+					Reflect.apply(setCollapsed, value, [true, false]);
+					Reflect.apply(setCollapsed, value, [false, false]);
+				} catch {
+					// A normal collapse/expand remains available if Obsidian changes this internal model.
+				}
+			},
+			syncChildren: () => {
+				if (!folder || !nestedVirtualChildren || typeof setNestedChildren !== 'function') return;
+				try {
+					const sorted = Reflect.apply(getSortedFolderItems, viewValue, [folder]) as unknown;
+					const current = nestedVirtualChildren.children;
+					if (!Array.isArray(sorted) || Array.isArray(current) && current.length === sorted.length
+						&& current.every((item, index) => item === sorted[index])) return;
+					Reflect.apply(setNestedChildren, nestedVirtualChildren, [sorted]);
+				} catch {
+					// Nested explorer refresh is optional when Obsidian changes its virtual tree model.
+				}
+			},
 		});
 	}
 	const itemsByPath = new Map(rootItems.map((item) => [item.path, item]));
-	const baseOrder = rootItems.map((item) => item.identity);
-	const setOrder = (items: object[]): void => {
+	const baseOrder = rootItems.filter(item => nativeValues.includes(item.identity)).map((item) => item.identity);
+	const setOrder = (items: object[]): boolean => {
 		const current = virtualChildren.children;
-		if (Array.isArray(current) && current.length === items.length && current.every((item, index) => item === items[index])) return;
+		if (Array.isArray(current) && current.length === items.length && current.every((item, index) => item === items[index])) return true;
 		try {
 			Reflect.apply(setChildren, virtualChildren, [items]);
+			return true;
 		} catch {
 			// Keeping native order is the safe fallback.
+			return false;
 		}
 	};
 	const invalidate = (): void => {
@@ -1226,10 +1702,12 @@ function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): Exp
 	return {
 		rootItems,
 		itemsByPath,
-		reorder: (paths) => {
+		reorder: (paths, external) => {
+			const externalPaths = new Set(external?.paths ?? []);
 			const ordered: object[] = [];
 			const seen = new Set<object>();
 			for (const path of paths) {
+				if (externalPaths.has(path)) continue;
 				const item = itemsByPath.get(path)?.identity;
 				if (!item || seen.has(item)) continue;
 				seen.add(item);
@@ -1240,9 +1718,17 @@ function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): Exp
 				seen.add(item);
 				ordered.push(item);
 			}
-			setOrder(ordered);
+			if (!setOrder(ordered)) return;
+			const nativeContainer = root.querySelector<HTMLElement>('.nav-files-container');
+			if (nativeContainer) for (const item of rootItems) {
+				if (!externalPaths.has(item.path) && item.el.closest('.scope-tabs-excluded-panel-body')) nativeContainer.appendChild(item.el);
+			}
+			if (external) for (const path of external.paths) {
+				const item = itemsByPath.get(path);
+				if (item && item.el.parentElement !== external.container) external.container.appendChild(item.el);
+			}
 		},
-		restoreOrder: () => setOrder(baseOrder),
+		restoreOrder: () => { setOrder(baseOrder); },
 		invalidate,
 	};
 }

@@ -1,3 +1,4 @@
+import { readPluginFrontmatter, updateConfigFrontmatter, writePluginFrontmatter } from './config-frontmatter';
 import {
 	Notice,
 	TFile,
@@ -9,6 +10,7 @@ import {
 	type Workspace,
 } from 'obsidian';
 import { getLeafFile } from './leaf-file';
+import { getSourcePopoutInit } from './popout-position';
 import type ScopeTabsPlugin from './main';
 import type { BookNoteOpenMode, BookScope, CardinalDirection, ManagedGroupLocation, PersistedGroupRecord } from './types';
 
@@ -23,11 +25,6 @@ interface GroupSnapshot {
 interface GroupTransferPlacement {
 	referenceLeaf: WorkspaceLeaf;
 	direction: CardinalDirection;
-}
-
-interface GridCoordinate {
-	row: number;
-	column: number;
 }
 
 interface GridCreationStep {
@@ -56,6 +53,7 @@ export class BookNavigationController {
 	private patchedOpenFile: WorkspaceLeaf['openFile'] | null = null;
 	private readonly groupRecords = new WeakMap<LeafParent, PersistedGroupRecord>();
 	private readonly canonicalGroups = new Map<string, LeafParent>();
+	private excludedGroup: LeafParent | null = null;
 	private readonly popoutSnapshots = new WeakMap<WorkspaceWindow, GroupSnapshot>();
 	private readonly suppressedWindowReturns = new WeakSet<WorkspaceWindow>();
 	private bookHistories = new WeakMap<LeafParent, Map<string, BookGroupHistory>>();
@@ -95,6 +93,7 @@ export class BookNavigationController {
 		this.originalOpenFile = null;
 		this.patchedOpenFile = null;
 		this.pendingFileExplorerOpen = null;
+		this.excludedGroup = null;
 		this.groupOpenOrder = new WeakMap<LeafParent, number>();
 		this.groupOpenClock = 0;
 	}
@@ -137,7 +136,24 @@ export class BookNavigationController {
 	}
 
 	getBookNoteOpenMode(book: BookScope): BookNoteOpenMode {
-		return this.plugin.settings.bookNoteOpenModeOverrides[book.id] ?? this.plugin.settings.bookNoteOpenMode;
+		return this.getBookNoteOpenModeOverride(book) ?? this.plugin.settings.bookNoteOpenMode;
+	}
+
+	getBookNoteOpenModeOverride(book: BookScope): BookNoteOpenMode | null {
+		const file = this.plugin.app.vault.getFileByPath(this.plugin.colors.getConfigPath(book));
+		const frontmatter = file ? this.plugin.app.metadataCache.getFileCache(file)?.frontmatter : null;
+		const mode: unknown = frontmatter ? readPluginFrontmatter(frontmatter, 'bookNoteOpenMode') : null;
+		return mode === 'same-tab' || mode === 'background-tab' || mode === 'focused-tab' ? mode : null;
+	}
+
+	async setBookNoteOpenMode(book: BookScope, mode: BookNoteOpenMode | null): Promise<void> {
+		const folder = this.plugin.app.vault.getFolderByPath(book.id);
+		if (!folder) return;
+		const file = await this.plugin.bookOrder.ensureConfig(folder);
+		await updateConfigFrontmatter(this.plugin.app, file, (fm: Record<string, unknown>, context) => { writePluginFrontmatter(fm, 'bookNoteOpenMode', mode ?? false, context.ownedPlainKeys); }, { aliases: {
+			[this.plugin.settings.colorFrontmatterProperty]: 'color',
+			[this.plugin.settings.tabTextFrontmatterProperty]: 'tab-text-bg',
+		} });
 	}
 
 	resetBookHistories(): void {
@@ -302,7 +318,11 @@ export class BookNavigationController {
 		if (existing) {
 			const existingBookLeaf = this.getGroupLeaves(existing).find((leaf) =>
 				this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault))?.id === book.id);
-			if (existingBookLeaf) this.focusLeaf(existingBookLeaf);
+			if (preferredEntryFile && entryFile) {
+				const matching = this.getGroupLeaves(existing).find(leaf => getLeafFile(leaf, this.plugin.app.vault)?.path === entryFile.path);
+				if (matching) this.focusLeaf(matching);
+				else await this.openBookInLeaf(existing, book, entryFile);
+			} else if (existingBookLeaf) this.focusLeaf(existingBookLeaf);
 			else if (entryFile) await this.openBookInLeaf(existing, book, entryFile);
 			else this.focusLeaf(existing);
 			return true;
@@ -323,7 +343,7 @@ export class BookNavigationController {
 		return this.openNewBookGroup(source, book, entryFile, undefined, this.originalOpenFile);
 	}
 
-	async openAdditionalBook(book: BookScope, popout: boolean): Promise<boolean> {
+	async openAdditionalBook(book: BookScope, forcePopout = false): Promise<boolean> {
 		const existing = this.getCanonicalBookLeaf(book);
 		if (existing) {
 			this.focusLeaf(existing);
@@ -333,7 +353,7 @@ export class BookNavigationController {
 		if (!entryFile || !this.originalOpenFile) return false;
 		const source = this.plugin.app.workspace.getMostRecentLeaf() ?? this.findMainWorkspaceLeaf();
 		if (!source) return false;
-		return this.openNewBookGroup(source, book, entryFile, undefined, this.originalOpenFile, popout ? 'popout' : 'main');
+		return this.openNewBookGroup(source, book, entryFile, undefined, this.originalOpenFile, forcePopout ? 'popout' : undefined);
 	}
 
 	async openBookCopy(book: BookScope): Promise<boolean> {
@@ -455,11 +475,15 @@ export class BookNavigationController {
 		for (const group of this.canonicalGroups.values()) {
 			if (this.getLeavesForGroup(group).length === 0) this.forgetGroup(group);
 		}
+		if (this.excludedGroup && this.getLeavesForGroup(this.excludedGroup).length === 0) this.forgetGroup(this.excludedGroup);
 		for (const [group, leaves] of groups) {
 			const existingRecord = this.groupRecords.get(group);
 			if (existingRecord?.kind === 'managed' && existingRecord.bookId && !this.groupContainsBook(leaves, existingRecord.bookId)) {
 				this.forgetGroup(group);
+			} else if (existingRecord?.kind === 'excluded' && !this.groupContainsOnlyExcludedFiles(leaves)) {
+				this.forgetGroup(group);
 			} else if (existingRecord) {
+				if (existingRecord.kind === 'excluded' && !this.excludedGroup) this.excludedGroup = group;
 				const leaf = leaves[0];
 				if (leaf && existingRecord.location !== getLocation(leaf)) {
 					const movedRecord = { ...existingRecord, location: getLocation(leaf) };
@@ -476,13 +500,27 @@ export class BookNavigationController {
 				delete this.plugin.runtimeState.groups[groupId];
 				void this.plugin.saveRuntimeState();
 			}
+			if (groupId && persisted?.kind === 'excluded' && !this.groupContainsOnlyExcludedFiles(leaves)) {
+				delete this.plugin.runtimeState.groups[groupId];
+				void this.plugin.saveRuntimeState();
+			}
 			if (persisted?.kind === 'free') {
 				this.groupRecords.set(group, persisted);
+				continue;
+			}
+			if (persisted?.kind === 'excluded' && this.groupContainsOnlyExcludedFiles(leaves) && !this.excludedGroup) {
+				this.groupRecords.set(group, persisted);
+				this.excludedGroup = group;
 				continue;
 			}
 			if (persisted?.kind === 'managed' && persisted.bookId && this.groupContainsBook(leaves, persisted.bookId) && !this.canonicalGroups.has(persisted.bookId)) {
 				this.groupRecords.set(group, persisted);
 				this.canonicalGroups.set(persisted.bookId, group);
+				continue;
+			}
+			if (this.groupContainsOnlyExcludedFiles(leaves)) {
+				if (!this.excludedGroup) this.registerExcludedGroup(leaf);
+				else this.registerFreeGroup(leaf);
 				continue;
 			}
 			const book = this.inferGroupBook(leaves);
@@ -522,20 +560,23 @@ export class BookNavigationController {
 	async sortAllTabsIntoBooks(animate?: (leaves: WorkspaceLeaf[]) => Promise<void>): Promise<number> {
 		if (this.routing || !this.plugin.scopeResolver.hasMultipleBooks()) return 0;
 		const booksById = new Map(this.plugin.scopeResolver.listBooks().map((book) => [book.id, book]));
-		const entries: Array<{ leaf: WorkspaceLeaf; book: BookScope; state: ViewState }> = [];
+		const entries: Array<{ leaf: WorkspaceLeaf; book: BookScope; filePath: string; state: ViewState }> = [];
 		this.plugin.app.workspace.iterateAllLeaves((leaf) => {
-			const book = this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault));
-			if (book) entries.push({ leaf, book, state: cloneViewState(leaf.getViewState()) });
+			const file = getLeafFile(leaf, this.plugin.app.vault);
+			const book = this.plugin.scopeResolver.resolveFile(file);
+			if (book && file) entries.push({ leaf, book, filePath: file.path, state: cloneViewState(leaf.getViewState()) });
 		});
 		if (entries.length === 0) return 0;
 
 		const activeBefore = this.plugin.app.workspace.getMostRecentLeaf();
 		const groups = this.collectGroups();
 		const groupBookIds = new Map<LeafParent, Set<string>>();
+		const pureBookGroups = new Set<LeafParent>();
 		for (const [group, leaves] of groups) {
-			groupBookIds.set(group, new Set(leaves
-				.map((leaf) => this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault))?.id)
-				.filter((id): id is string => id !== undefined)));
+			const ids = leaves.map((leaf) => this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault))?.id);
+			const scopedIds = new Set(ids.filter((id): id is string => id !== undefined));
+			groupBookIds.set(group, scopedIds);
+			if (ids.length > 0 && ids.every((id) => id !== undefined) && scopedIds.size === 1) pureBookGroups.add(group);
 		}
 		const openBookIds = new Set(entries.map((entry) => entry.book.id));
 		const orderedBookIds = [
@@ -553,19 +594,16 @@ export class BookNavigationController {
 				const source = entries.find((entry) => entry.book.id === bookId)?.leaf;
 				if (!book || !source) continue;
 				const canonical = this.getCanonicalBookLeaf(book);
-				let destination = canonical && !usedGroups.has(canonical.parent) ? canonical : null;
+				let destination = canonical && !usedGroups.has(canonical.parent) && pureBookGroups.has(canonical.parent) ? canonical : null;
 				if (!destination) {
 					destination = findGroupRepresentative(groups, usedGroups, (group) => {
 						const ids = groupBookIds.get(group);
-						return ids?.size === 1 && ids.has(bookId);
+						return pureBookGroups.has(group) && ids?.size === 1 && ids.has(bookId);
 					});
 				}
 				if (!destination) {
-					destination = findGroupRepresentative(groups, usedGroups, (group) => groupBookIds.get(group)?.has(bookId) === true);
-				}
-				if (!destination) {
 					destination = getLocation(source) === 'popout'
-						? this.plugin.app.workspace.openPopoutLeaf()
+						? this.createPopoutLeaf(source)
 						: this.createMainBookLeaf(source);
 					createdEmptyLeaves.push(destination);
 					groups.set(destination.parent, [destination]);
@@ -575,14 +613,31 @@ export class BookNavigationController {
 				destinations.set(bookId, destination);
 			}
 
-			const movingEntries = entries.filter((entry) => destinations.get(entry.book.id)?.parent !== entry.leaf.parent);
-			if (movingEntries.length === 0) return 0;
-			if (animate) await animate(movingEntries.map((entry) => entry.leaf));
-			const suppressedPopouts = this.suppressPopoutReturnsForMoves(new Set(movingEntries.map((entry) => entry.leaf)));
+			const uniqueEntries: typeof entries = [];
+			const duplicateEntries: typeof entries = [];
+			const byFile = new Map<string, typeof entries>();
+			for (const entry of entries) {
+				const key = `${entry.book.id}\u0000${entry.filePath}`;
+				const list = byFile.get(key) ?? [];
+				list.push(entry);
+				byFile.set(key, list);
+			}
+			for (const list of byFile.values()) {
+				const destination = destinations.get(list[0]!.book.id);
+				const survivor = list.find(entry => entry.leaf === activeBefore)
+					?? list.find(entry => destination?.parent === entry.leaf.parent)
+					?? list[0]!;
+				uniqueEntries.push(survivor);
+				for (const entry of list) if (entry !== survivor) duplicateEntries.push(entry);
+			}
+			const movingEntries = uniqueEntries.filter((entry) => destinations.get(entry.book.id)?.parent !== entry.leaf.parent);
+			if (animate && (movingEntries.length > 0 || duplicateEntries.length > 0)) await animate([...movingEntries, ...duplicateEntries].map((entry) => entry.leaf));
+			const affectedEntries = [...movingEntries, ...duplicateEntries];
+			const suppressedPopouts = this.suppressPopoutReturnsForMoves(new Set(affectedEntries.map((entry) => entry.leaf)));
 
 			let moved = 0;
 			let activeAfter = activeBefore;
-			const sourceGroups = new Set(movingEntries.map((entry) => entry.leaf.parent));
+			const sourceGroups = new Set(affectedEntries.map((entry) => entry.leaf.parent));
 			for (const entry of movingEntries) {
 				const destination = destinations.get(entry.book.id);
 				if (!destination) continue;
@@ -607,9 +662,22 @@ export class BookNavigationController {
 					console.error(`Root Books Tabs could not sort a tab for ${entry.book.name}.`, error);
 				}
 			}
+			for (const entry of duplicateEntries) {
+				try {
+					entry.leaf.detach();
+					moved++;
+				} catch (error) {
+					console.error(`Root Books Tabs could not close a duplicate tab for ${entry.book.name}.`, error);
+				}
+			}
 
 			for (const group of sourceGroups) {
-				if (this.getLeavesForGroup(group).length === 0) this.forgetGroup(group);
+				const remaining = this.getLeavesForGroup(group);
+				if (remaining.length === 0) this.forgetGroup(group);
+				else {
+					const record = this.groupRecords.get(group);
+					if (record?.kind === 'managed' && (!record.bookId || !this.groupContainsBook(remaining, record.bookId))) this.registerFreeGroup(remaining[0]!);
+				}
 			}
 			for (const leaf of createdEmptyLeaves) {
 				if (isEmptyLeaf(leaf)) {
@@ -624,6 +692,11 @@ export class BookNavigationController {
 				});
 				if (stillHasLeaves) this.suppressedWindowReturns.delete(root);
 			}
+			if (this.plugin.settings.bookSplitDirection === 'grid') {
+				const reflow = await this.repopulateManagedBooksInGrid(orderedBookIds, activeAfter);
+				moved += reflow.moved;
+				activeAfter = reflow.active ?? activeAfter;
+			}
 			this.capturePopoutSnapshots();
 			this.syncBookOrder();
 			if (activeAfter) this.focusLeaf(activeAfter);
@@ -631,6 +704,140 @@ export class BookNavigationController {
 		} finally {
 			this.routing = false;
 		}
+	}
+
+	private getCanonicalExcludedLeaf(): WorkspaceLeaf | null {
+		const group = this.excludedGroup;
+		if (!group) return null;
+		const leaves = this.collectGroups().get(group) ?? [];
+		if (leaves.length === 0 || !this.groupContainsOnlyExcludedFiles(leaves)) {
+			this.forgetGroup(group);
+			return null;
+		}
+		return this.plugin.app.workspace.getMostRecentLeaf(group) ?? leaves[0] ?? null;
+	}
+
+	private async repopulateManagedBooksInGrid(
+		orderedBookIds: readonly string[],
+		activeBefore: WorkspaceLeaf | null,
+	): Promise<{ moved: number; active: WorkspaceLeaf | null }> {
+		const booksById = new Map(this.plugin.scopeResolver.listBooks().map(book => [book.id, book]));
+		const snapshots: Array<{
+			book: BookScope;
+			group: LeafParent;
+			leaves: WorkspaceLeaf[];
+			states: ViewState[];
+			activeIndex: number;
+			histories: Map<string, BookGroupHistory> | null;
+		}> = [];
+		const seenGroups = new Set<LeafParent>();
+		for (const bookId of orderedBookIds) {
+			const book = booksById.get(bookId);
+			const representative = book ? this.getCanonicalBookLeaf(book) : null;
+			if (!book || !representative || seenGroups.has(representative.parent)) continue;
+			const leaves = this.getGroupLeaves(representative);
+			if (!leaves.length || !leaves.every(leaf => this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault))?.id === book.id)) continue;
+			seenGroups.add(representative.parent);
+			const recent = this.plugin.app.workspace.getMostRecentLeaf(representative.parent);
+			snapshots.push({
+				book,
+				group: representative.parent,
+				leaves,
+				states: leaves.map(leaf => cloneViewState(leaf.getViewState())),
+				activeIndex: Math.max(0, recent ? leaves.indexOf(recent) : 0),
+				histories: this.bookHistories.get(representative.parent)
+					? cloneBookHistories(this.bookHistories.get(representative.parent)!)
+					: null,
+			});
+		}
+		if (!snapshots.length) return { moved: 0, active: activeBefore };
+
+		const activeSnapshot = snapshots.find(snapshot => activeBefore && snapshot.leaves.includes(activeBefore));
+		const activeIndex = activeSnapshot && activeBefore ? activeSnapshot.leaves.indexOf(activeBefore) : -1;
+		const firstSnapshot = snapshots[0]!;
+		let anchor = getLocation(firstSnapshot.leaves[0]!) === 'main' ? firstSnapshot.leaves[0]! : null;
+		let anchorCreated = false;
+		if (!anchor) {
+			const reference = this.findMainWorkspaceLeaf();
+			if (!reference) return { moved: 0, active: activeBefore };
+			anchor = isEmptyLeaf(reference) && !seenGroups.has(reference.parent)
+				? reference
+				: this.createBookLeafAt(reference, 'right');
+			anchorCreated = true;
+		}
+
+		const detachedLeaves = new Set(snapshots.flatMap(snapshot => snapshot.group === anchor?.parent ? [] : snapshot.leaves));
+		this.suppressPopoutReturnsForMoves(detachedLeaves);
+		for (const snapshot of snapshots) {
+			if (snapshot.group === anchor.parent) continue;
+			this.forgetGroup(snapshot.group);
+			for (const leaf of snapshot.leaves) leaf.detach();
+		}
+		this.plugin.decorations.clearGridBaseCellMarkers();
+		this.plugin.runtimeState.gridBaseBookIds = [];
+		void this.plugin.saveRuntimeState();
+
+		const rebuilt = new Map<string, WorkspaceLeaf[]>();
+		const restoredBookIds = new Set<string>();
+		const partial = new Map<string, WorkspaceLeaf[]>();
+		let moved = 0;
+		try {
+			if (anchorCreated) {
+				const created = [anchor];
+				partial.set(firstSnapshot.book.id, created);
+				this.registerManagedGroup(anchor, firstSnapshot.book);
+				await this.restoreViewStates(anchor, firstSnapshot.states, created, firstSnapshot.book);
+				rebuilt.set(firstSnapshot.book.id, created);
+				moved += firstSnapshot.states.length;
+			} else {
+				this.registerManagedGroup(anchor, firstSnapshot.book);
+				rebuilt.set(firstSnapshot.book.id, this.getGroupLeaves(anchor));
+			}
+			if (firstSnapshot.histories) this.bookHistories.set(anchor.parent, firstSnapshot.histories);
+			restoredBookIds.add(firstSnapshot.book.id);
+
+			for (const snapshot of snapshots.slice(1)) {
+				const first = this.createGridBookLeaf(anchor);
+				const created = [first];
+				partial.set(snapshot.book.id, created);
+				this.registerManagedGroup(first, snapshot.book);
+				await this.restoreViewStates(first, snapshot.states, created, snapshot.book);
+				if (snapshot.histories) this.bookHistories.set(first.parent, snapshot.histories);
+				rebuilt.set(snapshot.book.id, created);
+				restoredBookIds.add(snapshot.book.id);
+				moved += snapshot.states.length;
+			}
+		} catch (error) {
+			console.error('Root Books Tabs could not fully rebuild the configured Grid.', error);
+			for (const [bookId, leaves] of partial) {
+				if (restoredBookIds.has(bookId)) continue;
+				this.forgetCreatedGroup(leaves[0]);
+				for (const leaf of leaves) if (leaf.view.containerEl.isConnected) leaf.detach();
+			}
+			for (const snapshot of snapshots) {
+				if (restoredBookIds.has(snapshot.book.id)) continue;
+				try {
+					const reference = this.findReusableEmptyMainLeaf() ?? this.findMainWorkspaceLeaf();
+					if (!reference) continue;
+					const first = isEmptyLeaf(reference) ? reference : this.createBookLeafAt(reference, 'right');
+					const created = [first];
+					this.registerManagedGroup(first, snapshot.book);
+					await this.restoreViewStates(first, snapshot.states, created, snapshot.book);
+					if (snapshot.histories) this.bookHistories.set(first.parent, snapshot.histories);
+					rebuilt.set(snapshot.book.id, created);
+					restoredBookIds.add(snapshot.book.id);
+					moved += snapshot.states.length;
+				} catch (recoveryError) {
+					console.error(`Root Books Tabs could not recover ${snapshot.book.name} after Grid placement failed.`, recoveryError);
+				}
+			}
+			new Notice('Tabs were preserved where possible, but some books could not be placed in the configured grid.');
+		}
+
+		const activeLeaves = activeSnapshot ? rebuilt.get(activeSnapshot.book.id) : null;
+		const connectedActive = activeBefore?.view.containerEl.isConnected === true ? activeBefore : null;
+		const firstRebuilt = rebuilt.values().next().value?.[0] ?? null;
+		return { moved, active: activeLeaves?.[Math.max(0, activeIndex)] ?? connectedActive ?? firstRebuilt };
 	}
 
 	getGroupLeaves(leaf: WorkspaceLeaf): WorkspaceLeaf[] {
@@ -658,6 +865,8 @@ export class BookNavigationController {
 			return original.call(destinationLeaf, file, openState);
 		}
 
+		const targetExcluded = this.plugin.scopeResolver.resolveExcludedFile(file);
+		if (targetExcluded) return this.routeExcludedOpen(sourceLeaf, file, openState, original);
 		const targetBook = this.plugin.scopeResolver.resolveFile(file);
 		if (!targetBook) return original.call(destinationLeaf, file, openState);
 		if (fromFileExplorer && this.plugin.settings.fileExplorerOpenBehavior === 'book-instance') {
@@ -667,6 +876,12 @@ export class BookNavigationController {
 		const sourceBook = this.plugin.scopeResolver.resolveFile(sourceFile);
 		if (!sourceBook) {
 			const sourceRecord = this.groupRecords.get(sourceLeaf.parent);
+			if (sourceRecord?.kind === 'excluded') {
+				const canonical = this.getCanonicalBookLeaf(targetBook);
+				if (canonical) return this.openOrReuseInGroup(canonical, targetBook, file, openState, original, 'focused-tab');
+				await this.openNewBookGroup(sourceLeaf, targetBook, file, openState, original);
+				return;
+			}
 			if (sourceRecord?.kind === 'free' || (getLocation(sourceLeaf) === 'popout' && !sourceRecord)) {
 				if (!sourceRecord) this.registerFreeGroup(sourceLeaf);
 				return original.call(destinationLeaf, file, openState);
@@ -700,6 +915,98 @@ export class BookNavigationController {
 			return this.openOrReuseInGroup(existing, targetBook, file, openState, original, 'focused-tab');
 		}
 		await this.openNewBookGroup(sourceLeaf, targetBook, file, openState, original);
+	}
+
+	private async routeExcludedOpen(
+		sourceLeaf: WorkspaceLeaf,
+		file: TFile,
+		openState: OpenViewState | undefined,
+		original: WorkspaceLeaf['openFile'],
+	): Promise<void> {
+		const existing = this.getCanonicalExcludedLeaf();
+		if (existing) {
+			await this.openOrReuseInExcludedGroup(existing, file, openState, original);
+			this.focusPopoutWindow(existing);
+			return;
+		}
+		await this.openNewExcludedGroup(sourceLeaf, file, openState, original);
+	}
+
+	private async openOrReuseInExcludedGroup(
+		referenceLeaf: WorkspaceLeaf,
+		file: TFile,
+		openState: OpenViewState | undefined,
+		original: WorkspaceLeaf['openFile'],
+	): Promise<void> {
+		if (this.plugin.settings.bookNoteOpenMode === 'same-tab') {
+			this.routing = true;
+			try {
+				await original.call(referenceLeaf, file, openState);
+				this.focusLeaf(referenceLeaf);
+			} finally {
+				this.routing = false;
+			}
+			return;
+		}
+
+		const existing = this.getGroupLeaves(referenceLeaf).find(leaf => getLeafFile(leaf, this.plugin.app.vault)?.path === file.path);
+		if (existing) {
+			this.routing = true;
+			try {
+				await original.call(existing, file, openState);
+				this.focusLeaf(existing);
+			} finally {
+				this.routing = false;
+			}
+			return;
+		}
+
+		const previous = this.plugin.app.workspace.getMostRecentLeaf();
+		const previousInGroup = this.plugin.app.workspace.getMostRecentLeaf(referenceLeaf.parent) ?? referenceLeaf;
+		this.routing = true;
+		try {
+			this.plugin.app.workspace.setActiveLeaf(referenceLeaf, { focus: false });
+			const next = this.plugin.app.workspace.getLeaf('tab');
+			this.registerExcludedGroup(next);
+			await original.call(next, file, openState);
+			this.applyTabInsertDirection(referenceLeaf, next);
+			if (this.plugin.settings.bookNoteOpenMode === 'focused-tab') this.focusLeaf(next);
+			else {
+				this.plugin.app.workspace.setActiveLeaf(previousInGroup, { focus: false });
+				if (previous) this.plugin.app.workspace.setActiveLeaf(previous, { focus: true });
+			}
+		} finally {
+			this.routing = false;
+		}
+	}
+
+	private async openNewExcludedGroup(
+		sourceLeaf: WorkspaceLeaf,
+		file: TFile,
+		openState: OpenViewState | undefined,
+		original: WorkspaceLeaf['openFile'],
+	): Promise<boolean> {
+		this.routing = true;
+		let createdLeaf: WorkspaceLeaf | null = null;
+		try {
+			createdLeaf = this.plugin.settings.excludedFileGroupLocation === 'popout'
+				? this.createPopoutLeaf(sourceLeaf)
+				: this.createBookLeafAt(sourceLeaf, 'right');
+			this.registerExcludedGroup(createdLeaf);
+			await original.call(createdLeaf, file, openState);
+			this.focusLeaf(createdLeaf);
+			return true;
+		} catch (error) {
+			console.error('Root Books Tabs could not create the excluded-files group.', error);
+			if (createdLeaf) {
+				this.forgetGroup(createdLeaf.parent);
+				createdLeaf.detach();
+			}
+			new Notice('Root books tabs could not create the excluded-files group. The current tab group was left unchanged.');
+			return false;
+		} finally {
+			this.routing = false;
+		}
 	}
 
 	private async routeFileExplorerOpen(
@@ -782,9 +1089,9 @@ export class BookNavigationController {
 		let createdLeaf: WorkspaceLeaf | null = null;
 		try {
 			const usePopout = forcedLocation === 'popout'
-				|| (forcedLocation === undefined && this.plugin.settings.openBooksInExternalWindows);
+				|| (forcedLocation === undefined && (this.plugin.vaultConfig.values.openBooksInExternalWindows === true));
 			const leaf = usePopout
-				? this.plugin.app.workspace.openPopoutLeaf()
+				? this.createPopoutLeaf(sourceLeaf)
 				: this.createMainBookLeaf(sourceLeaf);
 			createdLeaf = leaf;
 			this.registerManagedGroup(leaf, targetBook);
@@ -826,7 +1133,7 @@ export class BookNavigationController {
 			const first = placement
 				? this.createBookLeafAt(placement.referenceLeaf, placement.direction)
 				: target === 'popout'
-					? this.plugin.app.workspace.openPopoutLeaf()
+					? this.createPopoutLeaf(sourceLeaf)
 					: this.createMainBookLeaf(this.findMainWorkspaceLeaf() ?? sourceLeaf);
 			created.push(first);
 			if (sourceManaged) this.registerManagedGroup(first, book);
@@ -894,6 +1201,11 @@ export class BookNavigationController {
 		return this.plugin.app.workspace.createLeafBySplit(mainReference, direction.axis, direction.before);
 	}
 
+	private createPopoutLeaf(source: WorkspaceLeaf): WorkspaceLeaf {
+		const init = getSourcePopoutInit(source);
+		return init ? this.plugin.app.workspace.openPopoutLeaf(init) : this.plugin.app.workspace.openPopoutLeaf();
+	}
+
 	private createBookLeafAt(reference: WorkspaceLeaf, direction: CardinalDirection, forceNested = false): WorkspaceLeaf {
 		const split = this.resolveSplitDirection(direction);
 		const rollbackNestedWrapper = forceNested
@@ -911,20 +1223,48 @@ export class BookNavigationController {
 		const orderedMainLeaves = this.getOrderedMainBookLeaves();
 		const capacity = this.plugin.settings.gridRows * this.plugin.settings.gridColumns;
 		if (orderedMainLeaves.length < capacity) {
-			return this.createClockwiseGridBaseLeaf(
+			return this.createRowMajorGridBaseLeaf(
 				orderedMainLeaves,
 				fallback,
-				getClockwiseGridCreationSteps(this.plugin.settings.gridRows, this.plugin.settings.gridColumns),
+				getRowMajorGridCreationSteps(this.plugin.settings.gridRows, this.plugin.settings.gridColumns),
 				capacity,
 			);
 		}
 		const baseLeaves = this.syncGridBaseLeaves(orderedMainLeaves, capacity);
 		const overflowStep = orderedMainLeaves.length - capacity;
 		const reference = baseLeaves[overflowStep % baseLeaves.length] ?? orderedMainLeaves[0] ?? fallback;
+		this.getGridBaseCellElement(reference);
 		return this.createBookLeafAt(reference, this.plugin.settings.gridOverflowDirection, true);
 	}
 
-	private createClockwiseGridBaseLeaf(
+	/** Recover the stable outer base-cell wrapper after CSS classes are lost on reload. */
+	getGridBaseCellElement(leaf: WorkspaceLeaf): HTMLElement | null {
+		const group: unknown = leaf.parent;
+		if (!isUnknownRecord(group) || !isHtmlElement(group.containerEl, leaf.view.containerEl.ownerDocument)) return null;
+		const marked = group.containerEl.closest<HTMLElement>('.scope-tabs-grid-base-cell');
+		if (marked) return marked;
+		const baseIds = new Set(this.plugin.runtimeState.gridBaseBookIds.slice(0, this.plugin.settings.gridRows * this.plugin.settings.gridColumns));
+		const otherBaseGroups: HTMLElement[] = [];
+		this.plugin.app.workspace.iterateAllLeaves(candidate => {
+			if (candidate.parent === leaf.parent || this.getGroupLocation(candidate) !== 'main' || !this.isManagedGroup(candidate)) return;
+			const book = this.getBookForGroup(candidate);
+			const candidateGroup: unknown = candidate.parent;
+			if (!book || !baseIds.has(book.id) || !isUnknownRecord(candidateGroup) || !isHtmlElement(candidateGroup.containerEl, leaf.view.containerEl.ownerDocument)) return;
+			if (!otherBaseGroups.includes(candidateGroup.containerEl)) otherBaseGroups.push(candidateGroup.containerEl);
+		});
+		let cell = group.containerEl;
+		let ancestor: unknown = group.parent;
+		while (isUnknownRecord(ancestor) && isHtmlElement(ancestor.containerEl, leaf.view.containerEl.ownerDocument)) {
+			const ancestorEl = ancestor.containerEl;
+			if (otherBaseGroups.some(other => ancestorEl.contains(other))) break;
+			cell = ancestorEl;
+			ancestor = ancestor.parent;
+		}
+		if (cell !== group.containerEl) cell.addClass('scope-tabs-grid-base-cell');
+		return cell;
+	}
+
+	private createRowMajorGridBaseLeaf(
 		orderedMainLeaves: WorkspaceLeaf[],
 		fallback: WorkspaceLeaf,
 		steps: GridCreationStep[],
@@ -1138,6 +1478,7 @@ export class BookNavigationController {
 		if (existing?.kind === 'managed' && existing.bookId && existing.bookId !== book.id && this.canonicalGroups.get(existing.bookId) === leaf.parent) {
 			this.canonicalGroups.delete(existing.bookId);
 		}
+		if (this.excludedGroup === leaf.parent) this.excludedGroup = null;
 		const record: PersistedGroupRecord = { kind: 'managed', bookId: book.id, location: getLocation(leaf) };
 		this.groupRecords.set(leaf.parent, record);
 		this.canonicalGroups.set(book.id, leaf.parent);
@@ -1152,9 +1493,27 @@ export class BookNavigationController {
 		if (existing?.kind === 'managed' && existing.bookId && this.canonicalGroups.get(existing.bookId) === leaf.parent) {
 			this.canonicalGroups.delete(existing.bookId);
 		}
+		if (this.excludedGroup === leaf.parent) this.excludedGroup = null;
 		const record: PersistedGroupRecord = { kind: 'free', location: getLocation(leaf) };
 		this.groupRecords.set(leaf.parent, record);
 		if (newlyAssociated) this.markGroupOpened(leaf.parent);
+		this.persistGroup(leaf.parent, record);
+		return record;
+	}
+
+	private registerExcludedGroup(leaf: WorkspaceLeaf): PersistedGroupRecord {
+		const existing = this.groupRecords.get(leaf.parent);
+		if (existing?.kind === 'managed' && existing.bookId && this.canonicalGroups.get(existing.bookId) === leaf.parent) {
+			this.canonicalGroups.delete(existing.bookId);
+		}
+		if (this.excludedGroup && this.excludedGroup !== leaf.parent) {
+			const previous = this.getLeavesForGroup(this.excludedGroup)[0];
+			if (previous) this.registerFreeGroup(previous);
+		}
+		const record: PersistedGroupRecord = { kind: 'excluded', location: getLocation(leaf) };
+		this.groupRecords.set(leaf.parent, record);
+		this.excludedGroup = leaf.parent;
+		if (existing?.kind !== 'excluded') this.markGroupOpened(leaf.parent);
 		this.persistGroup(leaf.parent, record);
 		return record;
 	}
@@ -1212,6 +1571,7 @@ export class BookNavigationController {
 		if (record?.kind === 'managed' && record.bookId && this.canonicalGroups.get(record.bookId) === group) {
 			this.canonicalGroups.delete(record.bookId);
 		}
+		if (this.excludedGroup === group) this.excludedGroup = null;
 		this.groupRecords.delete(group);
 		this.bookHistories.delete(group);
 		this.groupOpenOrder.delete(group);
@@ -1234,6 +1594,11 @@ export class BookNavigationController {
 
 	private groupContainsBook(leaves: WorkspaceLeaf[], bookId: string): boolean {
 		return leaves.some((leaf) => this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault))?.id === bookId);
+	}
+
+	private groupContainsOnlyExcludedFiles(leaves: WorkspaceLeaf[]): boolean {
+		const files = leaves.map(leaf => getLeafFile(leaf, this.plugin.app.vault)).filter((file): file is TFile => file !== null);
+		return files.length > 0 && files.every(file => this.plugin.scopeResolver.resolveExcludedFile(file) !== null);
 	}
 
 	private countGroupBooks(leaves: WorkspaceLeaf[]): number {
@@ -1336,18 +1701,22 @@ export class BookNavigationController {
 		if (!parent || reference.parent !== created.parent) return;
 		const referenceIndex = parent.children.indexOf(reference);
 		const createdIndex = parent.children.indexOf(created);
-		const insertLeft = this.plugin.settings.tabInsertDirection === 'left';
+		const book = this.plugin.scopeResolver.resolveFile(getLeafFile(reference, this.plugin.app.vault));
+		const config = book ? this.plugin.app.vault.getFileByPath(this.plugin.colors.getConfigPath(book)) : null;
+		const frontmatter = config ? this.plugin.app.metadataCache.getFileCache(config)?.frontmatter : null;
+		const override: unknown = frontmatter ? readPluginFrontmatter(frontmatter, 'tabInsertDirection') : null;
+		const insertRight = (override === 'right' || override === 'end' ? override : this.plugin.vaultConfig.values.tabInsertDirection ?? this.plugin.settings.tabInsertDirection) === 'right';
 		if (referenceIndex < 0 || createdIndex < 0) return;
-		if (insertLeft && createdIndex === referenceIndex - 1) return;
-		if (!insertLeft && createdIndex === parent.children.length - 1) return;
+		if (insertRight && createdIndex === referenceIndex + 1) return;
+		if (!insertRight && createdIndex === parent.children.length - 1) return;
 		let removed = false;
 		try {
 			parent.removeChild(created);
 			removed = true;
-			if (insertLeft) {
+			if (insertRight) {
 				const updatedReferenceIndex = parent.children.indexOf(reference);
 				if (updatedReferenceIndex < 0) throw new Error('Reference tab disappeared during tab reordering.');
-				parent.insertChild(updatedReferenceIndex, created);
+				parent.insertChild(updatedReferenceIndex + 1, created);
 			} else {
 				parent.insertChild(parent.children.length, created);
 			}
@@ -1382,70 +1751,13 @@ function cloneBookHistories(source: Map<string, BookGroupHistory>): Map<string, 
 	}]));
 }
 
-function getClockwiseGridCreationSteps(rows: number, columns: number): GridCreationStep[] {
-	const coordinates = getClockwiseGridCoordinates(rows, columns);
-	return coordinates.slice(1).map((coordinate, coordinateOffset) => {
-		const coordinateIndex = coordinateOffset + 1;
-		if (coordinate.row === 0) {
-			const referenceIndex = findCoordinateIndex(coordinates, coordinateIndex, coordinate.row, coordinate.column - 1);
-			return { referenceIndex: Math.max(0, referenceIndex), direction: 'right' };
-		}
-
-		let referenceIndex = -1;
-		let nearestRow = -1;
-		for (let index = 0; index < coordinateIndex; index++) {
-			const candidate = coordinates[index];
-			if (candidate?.column !== coordinate.column || candidate.row >= coordinate.row || candidate.row <= nearestRow) continue;
-			nearestRow = candidate.row;
-			referenceIndex = index;
-		}
-		if (referenceIndex >= 0) return { referenceIndex, direction: 'down' };
-
-		let nearestBelow = Number.POSITIVE_INFINITY;
-		for (let index = 0; index < coordinateIndex; index++) {
-			const candidate = coordinates[index];
-			if (candidate?.column !== coordinate.column || candidate.row <= coordinate.row || candidate.row >= nearestBelow) continue;
-			nearestBelow = candidate.row;
-			referenceIndex = index;
-		}
-		return { referenceIndex: Math.max(0, referenceIndex), direction: 'up' };
+function getRowMajorGridCreationSteps(rows: number, columns: number): GridCreationStep[] {
+	return Array.from({ length: rows * columns - 1 }, (_, offset) => {
+		const index = offset + 1;
+		return index < columns
+			? { referenceIndex: index - 1, direction: 'right' }
+			: { referenceIndex: index - columns, direction: 'down' };
 	});
-}
-
-function getClockwiseGridCoordinates(rows: number, columns: number): GridCoordinate[] {
-	const result: GridCoordinate[] = [];
-	let top = 0;
-	let bottom = rows - 1;
-	let left = 0;
-	let right = columns - 1;
-	while (top <= bottom && left <= right) {
-		for (let column = left; column <= right; column++) result.push({ row: top, column });
-		for (let row = top + 1; row <= bottom; row++) result.push({ row, column: right });
-		if (top < bottom) {
-			for (let column = right - 1; column >= left; column--) result.push({ row: bottom, column });
-		}
-		if (left < right) {
-			for (let row = bottom - 1; row > top; row--) result.push({ row, column: left });
-		}
-		top++;
-		bottom--;
-		left++;
-		right--;
-	}
-	return result;
-}
-
-function findCoordinateIndex(
-	coordinates: GridCoordinate[],
-	endIndex: number,
-	row: number,
-	column: number,
-): number {
-	for (let index = endIndex - 1; index >= 0; index--) {
-		const candidate = coordinates[index];
-		if (candidate?.row === row && candidate.column === column) return index;
-	}
-	return -1;
 }
 
 function findGroupRepresentative(
@@ -1503,6 +1815,11 @@ function wrapTabGroupForNestedSplit(
 		Reflect.apply(replaceChild, parent, [index, nested]);
 		if (typeof setNestedDimension === 'function') Reflect.apply(setNestedDimension, nested, [groupDimension ?? null]);
 		Reflect.apply(nested.insertChild, nested, [0, group]);
+		const nestedContainer = nested.containerEl;
+		if (isHtmlElement(nestedContainer, reference.view.containerEl.ownerDocument)
+			&& !reference.view.containerEl.closest('.scope-tabs-grid-base-cell')) {
+			nestedContainer.addClass('scope-tabs-grid-base-cell');
+		}
 		return () => {
 			const nestedIndex = parentChildren.indexOf(nested);
 			if (nestedIndex >= 0) Reflect.apply(replaceChild, parent, [nestedIndex, group]);
@@ -1522,6 +1839,11 @@ function wrapTabGroupForNestedSplit(
 
 function getMutableTabGroup(leaf: WorkspaceLeaf): MutableTabGroupCompatibility | null {
 	return getMutableTabGroupFromParent(leaf.parent);
+}
+
+function isHtmlElement(value: unknown, doc: Document): value is HTMLElement {
+	const HtmlElement = doc.defaultView?.HTMLElement;
+	return !!HtmlElement && value instanceof HtmlElement;
 }
 
 /** Obsidian has no public tab-order API, so this adapter is optional and feature-detected. */

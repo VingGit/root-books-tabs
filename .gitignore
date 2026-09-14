@@ -18,5 +18,10 @@ main.js
 # obsidian
 data.json
 
+# Local agent tooling and diagnostic harness output
+.agents/
+.tmp-tests/
+skills-lock.json
+
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store

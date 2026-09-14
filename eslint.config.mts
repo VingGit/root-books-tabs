@@ -4,10 +4,15 @@ import { globalIgnores, defineConfig } from 'eslint/config';
 
 export default defineConfig(
 	globalIgnores([
+		'.agents/**',
+		'.github/temp/**',
+		'.tmp-tests/**',
 		'node_modules',
 		'dist',
 		'esbuild.config.mjs',
 		'version-bump.mjs',
+		'scripts/test.mjs',
+		'tests/**',
 		'versions.json',
 		'main.js',
 		'package.json',

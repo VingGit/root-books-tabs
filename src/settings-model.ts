@@ -1,7 +1,7 @@
 import type { ScopeTabsRuntimeStateV1, ScopeTabsSettings } from './types';
 
 export const DEFAULT_SETTINGS: ScopeTabsSettings = {
-	colorMode: 'manual',
+	colorMode: 'frontmatter',
 	manualColors: {},
 	manualTabTextColors: {},
 	configFileBaseName: 'index',
@@ -25,6 +25,16 @@ export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 	gridOverflowDirection: 'right',
 	gridRows: 2,
 	gridColumns: 2,
+	orderingDirection: 'descending',
+	configNotePosition: 'top',
+	indexMoveDecision: 'ask',
+	excludedBookFolders: ['templates'],
+	excludedFileGroupLocation: 'next-to-current',
+	templateFilePrefix: '{{date}}_',
+	templateFileDate: 'DD.MM.YYYY',
+	templateFilePath: 'templates/example.md',
+	templateFileAppliedTo: 'md',
+	forceUpdateLinks: true,
 	tabInsertDirection: 'right',
 	bookNoteOpenMode: 'focused-tab',
 	bookNoteOpenModeOverrides: {},
@@ -41,7 +51,7 @@ export const DEFAULT_RUNTIME_STATE: ScopeTabsRuntimeStateV1 = {
 export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	const source = isRecord(saved) ? saved : {};
 	const settings = structuredClone(DEFAULT_SETTINGS);
-	if (source.colorMode === 'manual' || source.colorMode === 'frontmatter') settings.colorMode = source.colorMode;
+	settings.colorMode = 'frontmatter';
 	if (isStringRecord(source.manualColors)) settings.manualColors = { ...source.manualColors };
 	if (isStringRecord(source.manualTabTextColors)) {
 		for (const [bookId, value] of Object.entries(source.manualTabTextColors)) {
@@ -88,7 +98,18 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	}
 	settings.gridRows = clampGridDimension(source.gridRows);
 	settings.gridColumns = clampGridDimension(source.gridColumns);
-	if (source.tabInsertDirection === 'right' || source.tabInsertDirection === 'left') settings.tabInsertDirection = source.tabInsertDirection;
+	if (source.orderingDirection === 'ascending' || source.orderingDirection === 'descending') settings.orderingDirection = source.orderingDirection;
+	if (source.configNotePosition === 'top' || source.configNotePosition === 'bottom') settings.configNotePosition = source.configNotePosition;
+	if (source.indexMoveDecision === 'ask' || source.indexMoveDecision === 'block' || source.indexMoveDecision === 'merge-frontmatter' || source.indexMoveDecision === 'append-body' || source.indexMoveDecision === 'replace-frontmatter' || source.indexMoveDecision === 'replace-content' || source.indexMoveDecision === 'swap') settings.indexMoveDecision = source.indexMoveDecision;
+	if (Array.isArray(source.excludedBookFolders)) settings.excludedBookFolders = sanitizeExcludedBookFolders(source.excludedBookFolders);
+	if (source.excludedFileGroupLocation === 'next-to-current' || source.excludedFileGroupLocation === 'popout') settings.excludedFileGroupLocation = source.excludedFileGroupLocation;
+	if (typeof source.templateFilePrefix === 'string') settings.templateFilePrefix = source.templateFilePrefix;
+	if (typeof source.templateFileDate === 'string' && source.templateFileDate.trim()) settings.templateFileDate = source.templateFileDate.trim();
+	if (typeof source.templateFilePath === 'string') settings.templateFilePath = source.templateFilePath.replace(/^\.\//, '').trim();
+	if (typeof source.templateFileAppliedTo === 'string' && source.templateFileAppliedTo.trim()) settings.templateFileAppliedTo = source.templateFileAppliedTo.trim();
+	copyBoolean(source, settings, 'forceUpdateLinks');
+	if (source.tabInsertDirection === 'end') settings.tabInsertDirection = 'end';
+	else if (source.tabInsertDirection === 'left') settings.tabInsertDirection = 'right';
 	if (source.bookNoteOpenMode === 'same-tab' || source.bookNoteOpenMode === 'background-tab' || source.bookNoteOpenMode === 'focused-tab') {
 		settings.bookNoteOpenMode = source.bookNoteOpenMode;
 	} else if (typeof source.focusNewTabs === 'boolean') {
@@ -109,7 +130,7 @@ export function migrateRuntimeState(saved: unknown): ScopeTabsRuntimeStateV1 {
 	if (!isRecord(saved) || saved.version !== 1 || !isRecord(saved.groups)) return structuredClone(DEFAULT_RUNTIME_STATE);
 	const groups: ScopeTabsRuntimeStateV1['groups'] = {};
 	for (const [id, value] of Object.entries(saved.groups)) {
-		if (!isRecord(value) || (value.kind !== 'managed' && value.kind !== 'free')) continue;
+		if (!isRecord(value) || (value.kind !== 'managed' && value.kind !== 'free' && value.kind !== 'excluded')) continue;
 		if (value.location !== 'main' && value.location !== 'popout') continue;
 		if (value.kind === 'managed' && typeof value.bookId !== 'string') continue;
 		groups[id] = {
@@ -170,4 +191,11 @@ function normalizeManualTabTextColor(value: string): '#000000' | '#ffffff' | nul
 function clampGridDimension(value: unknown): number {
 	if (typeof value !== 'number' || !Number.isFinite(value)) return 2;
 	return Math.min(16, Math.max(2, Math.round(value)));
+}
+
+export function sanitizeExcludedBookFolders(value: unknown[]): string[] {
+	const names = value.filter((entry): entry is string => typeof entry === 'string')
+		.map(entry => entry.trim().replace(/^\.\//, '').replace(/\/$/, ''))
+		.filter(entry => entry.length > 0 && !entry.includes('/') && !entry.includes('\\'));
+	return [...new Set(names)];
 }

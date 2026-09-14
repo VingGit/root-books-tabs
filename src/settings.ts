@@ -1,33 +1,35 @@
-import { App, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, setIcon, type SettingDefinitionItem, type SliderComponent, type TextComponent } from 'obsidian';
-import { isHexColor, isManualTabTextColor } from './colors';
+import { App, FuzzySuggestModal, TAbstractFile, TFile, TFolder, DropdownComponent, Modal, Notice, PluginSettingTab, Setting, setIcon, type SettingDefinitionItem, type SliderComponent, type TextComponent } from 'obsidian';
+import { isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
-import type { BookNoteOpenMode, BookScope, ColorMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor } from './types';
+import type { FolderTemplateOverrides } from './templates';
+import type { BookNoteOpenMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor } from './types';
 
 export class ScopeTabsSettingTab extends PluginSettingTab {
-	private manualSection: HTMLElement | null = null;
-	private frontmatterSection: HTMLElement | null = null;
+
+
 	private tabOptionsSection: HTMLElement | null = null;
 	private customCssSection: HTMLElement | null = null;
 	private backgroundTextButton: HTMLElement | null = null;
 	private gridOverflowControl: HTMLElement | null = null;
 	private gridDimensionsSection: HTMLElement | null = null;
+	private gridRefillTimer: number | null = null;
 
 	constructor(app: App, private readonly scopeTabs: ScopeTabsPlugin) {
 		super(app, scopeTabs);
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
-		return [{
-			name: 'Root Books Tabs settings',
-			desc: 'Book mode, navigation, book colors, tab styles, creation locations, and maintenance.',
-			aliases: ['Grid', 'Background text', 'pop-out', 'new note', 'new folder'],
-			render: (setting) => {
-				setting.settingEl.empty();
-				setting.settingEl.addClass('scope-tabs-settings-root');
-				this.renderSettings(setting.settingEl);
-			},
-		}];
+		const groups: [string, (container: HTMLElement) => void][] = [
+			['Book mode', el => this.renderBookMode(el)], ['Navigation', el => this.renderNavigation(el)],
+			['Ordering', el => this.renderOrdering(el)],
+			['Per book config', el => this.renderColors(el)], ['Decorations', el => this.renderDecorations(el)],
+			['Folder templates', el => this.renderTemplates(el)],
+			['Hidden and excluded', el => this.renderHiddenAndExcluded(el)], ['Maintenance', el => this.renderMaintenance(el)],
+		];
+		return groups.map(([name, render]) => ({ type: 'group', heading: name, cls: 'scope-tabs-settings-section', items: [{ name, render: setting => {
+			setting.settingEl.empty(); setting.settingEl.addClass('scope-tabs-settings-root'); render(setting.settingEl); this.updateConditionalSections();
+		} }] }));
 	}
 
 	private renderSettings(containerEl: HTMLElement): void {
@@ -35,11 +37,14 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		containerEl.createEl('p', {
 			text: 'Each first-level folder is a book. Root books tabs provides a focused explorer and keeps each book in one managed tab group or pop-out.',
 		});
-		this.renderBookMode(containerEl);
-		this.renderNavigation(containerEl);
-		this.renderColors(containerEl);
-		this.renderDecorations(containerEl);
-		this.renderMaintenance(containerEl);
+		this.renderBookMode(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderNavigation(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderOrdering(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderColors(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderTemplates(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderDecorations(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderMaintenance(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderHiddenAndExcluded(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.updateConditionalSections();
 	}
 
@@ -84,33 +89,16 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 
 	private renderNavigation(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Navigation').setHeading();
-		let startupNoteDropdown: DropdownComponent;
-		new Setting(containerEl)
-			.setName('Default startup book')
-			.setDesc('Open this book only when Obsidian restored no content tabs or pop-outs. Existing workspace history always wins.')
-			.addDropdown((dropdown) => {
-				dropdown.addOption('', 'No startup default');
-				for (const book of this.scopeTabs.scopeResolver.listBooks()) dropdown.addOption(book.id, book.name);
-				dropdown
-					.setValue(this.scopeTabs.settings.defaultStartupBookId ?? '')
-					.onChange(async (value) => {
-						this.scopeTabs.settings.defaultStartupBookId = value || null;
-						this.scopeTabs.settings.defaultStartupNotePath = null;
-						this.populateStartupNoteDropdown(startupNoteDropdown, value || null);
-						await this.scopeTabs.saveSettings();
-					});
-			});
-		new Setting(containerEl)
-			.setName('Default startup note')
-			.setDesc('Choose a note in the startup book, or use its normal entry note. The saved value is a vault-relative path for optional programmatic setup.')
-			.addDropdown((dropdown) => {
-				startupNoteDropdown = dropdown;
-				this.populateStartupNoteDropdown(dropdown, this.scopeTabs.settings.defaultStartupBookId);
-				dropdown.onChange(async (value) => {
-					this.scopeTabs.settings.defaultStartupNotePath = value || null;
-					await this.scopeTabs.saveSettings();
-				});
-			});
+		new Setting(containerEl).setName('Fresh clone opening path')
+			.setDesc('Choose a book or note to open once on a fresh start. Stored in the vault root index.md.')
+			.addButton(button => button.setButtonText('Choose path').onClick(() => new VaultPathModal(this.app, this.scopeTabs, async file => {
+				await this.scopeTabs.vaultConfig.set('freshCloneOpeningPath', file.path);
+				this.update();
+			}, true).open()));
+		new Setting(containerEl).setName('Opening path').setDesc(typeof this.scopeTabs.vaultConfig.values.freshCloneOpeningPath === 'string' ? this.scopeTabs.vaultConfig.values.freshCloneOpeningPath : 'Latest edited note if no workspace is saved');
+		new Setting(containerEl).setName('Open the configured path next time')
+			.setDesc('Arm the fresh-start switch in root index.md. It resets after the next startup.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.vaultConfig.values.isFreshClone === true).onChange(value => this.scopeTabs.vaultConfig.set('isFreshClone', value)));
 		const fileExplorerOpening = new Setting(containerEl)
 			.setName('File explorer note opening')
 			.setDesc('Choose whether a file explorer note opens in the most recently opened matching book instance or in the currently focused book group.');
@@ -138,7 +126,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				}));
 		const bookPosition = new Setting(containerEl)
 			.setName('New book position')
-			.setDesc('Cardinal placement or a configurable clockwise grid with per-cell overflow.')
+			.setDesc('Cardinal placement or a configurable row-by-row grid with per-cell overflow.')
 			.addDropdown((dropdown) => {
 				dropdown.selectEl.addClass('scope-tabs-book-position-select');
 				dropdown
@@ -164,12 +152,13 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		this.renderGridDimension(this.gridDimensionsSection, 'Grid columns', 'gridColumns');
 		new Setting(containerEl)
 			.setName('New tab position')
-			.setDesc('Append newly opened files at the right edge of the book group, or place them immediately left of the current tab. Ordering uses a feature-detected compatibility adapter.')
+			.setDesc('Open tabs immediately right of the current tab or at the end. Stored in root index.md; each book can override this.')
 			.addDropdown((dropdown) => dropdown
-				.addOptions({ right: 'Right edge', left: 'Left of current' })
+				.addOptions({ right: 'To right of current one', end: 'Always at the end' })
 				.setValue(this.scopeTabs.settings.tabInsertDirection)
 				.onChange(async (value: string) => {
-					this.scopeTabs.settings.tabInsertDirection = value as 'left' | 'right';
+					this.scopeTabs.settings.tabInsertDirection = value as 'end' | 'right';
+					await this.scopeTabs.vaultConfig.set('tabInsertDirection', value);
 					await this.scopeTabs.saveSettings();
 				}));
 		new Setting(containerEl)
@@ -198,8 +187,78 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			.setDesc('Use an Obsidian desktop pop-out instead of a split when a book is first opened.')
 			.addToggle((toggle) => toggle.setValue(this.scopeTabs.settings.openBooksInExternalWindows).onChange(async (value: boolean) => {
 				this.scopeTabs.settings.openBooksInExternalWindows = value;
+				await this.scopeTabs.vaultConfig.set('openBooksInExternalWindows', value);
 				await this.scopeTabs.saveSettings();
 			}));
+		new Setting(containerEl)
+			.setName('Keep internal links updated')
+			.setDesc('Keep Obsidian’s automatic link updating enabled while this plugin is active. This is on after installation and reset.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.settings.forceUpdateLinks).onChange(async value => {
+				this.scopeTabs.settings.forceUpdateLinks = value;
+				await this.scopeTabs.vaultConfig.set('forceUpdateLinks', value);
+				void this.scopeTabs.linkMaintenance.enforce();
+			}));
+	}
+
+	private renderOrdering(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName('Ordering').setHeading();
+		new Setting(containerEl)
+			.setName('Default ordering direction')
+			.setDesc('Descending keeps the newest items at the top for date sorting. The ordering-mode arrow changes this value.')
+			.addDropdown(dropdown => dropdown
+				.addOptions({ descending: 'Descending', ascending: 'Ascending' })
+				.setValue(this.scopeTabs.settings.orderingDirection)
+				.onChange(async value => {
+					this.scopeTabs.settings.orderingDirection = value as typeof this.scopeTabs.settings.orderingDirection;
+					await this.scopeTabs.vaultConfig.set('orderingDirection', value);
+					this.scopeTabs.decorations.refresh();
+				}));
+		new Setting(containerEl)
+			.setName('Config note position')
+			.setDesc('Keep each folder’s config note outside manual file order and pin it at the top or bottom.')
+			.addDropdown(dropdown => dropdown
+				.addOptions({ top: 'Top', bottom: 'Bottom' })
+				.setValue(this.scopeTabs.settings.configNotePosition)
+				.onChange(async value => {
+					this.scopeTabs.settings.configNotePosition = value as typeof this.scopeTabs.settings.configNotePosition;
+					await this.scopeTabs.vaultConfig.set('configNotePosition', value);
+					this.scopeTabs.decorations.refresh();
+				}));
+		if (this.scopeTabs.settings.indexMoveDecision !== 'ask') new Setting(containerEl)
+			.setName('Remembered config-note move action')
+			.setDesc('Clear the saved choice so the safety dialog appears again.')
+			.addButton(button => button.setButtonText('Forget choice').onClick(async () => {
+				this.scopeTabs.settings.indexMoveDecision = 'ask';
+				await this.scopeTabs.saveSettings();
+				this.update();
+			}));
+	}
+
+	private renderTemplates(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName('Folder templates').setHeading();
+		new Setting(containerEl).setName('Filename prefix').setDesc('Added to new matching files. Use {{date}} to insert the formatted creation date.')
+			.addText(text => text.setValue(this.scopeTabs.settings.templateFilePrefix).onChange(async value => {
+				this.scopeTabs.settings.templateFilePrefix = value;
+				await this.scopeTabs.vaultConfig.set('templateFilePrefix', value);
+			}));
+		new Setting(containerEl).setName('Date format').setDesc('Moment-style date format. A time suffix is added when the date-only filename already exists.')
+			.addText(text => text.setValue(this.scopeTabs.settings.templateFileDate).onChange(async value => {
+				this.scopeTabs.settings.templateFileDate = value || DEFAULT_SETTINGS.templateFileDate;
+				await this.scopeTabs.vaultConfig.set('templateFileDate', this.scopeTabs.settings.templateFileDate);
+			}));
+		new Setting(containerEl).setName('Template file').setDesc('Vault-relative file copied into a new matching file after it is named.')
+			.addText(text => text.setValue(this.scopeTabs.settings.templateFilePath).onChange(async value => {
+				this.scopeTabs.settings.templateFilePath = value.replace(/^\.\//, '');
+				await this.scopeTabs.vaultConfig.set('templateFilePath', this.scopeTabs.settings.templateFilePath);
+			}));
+		new Setting(containerEl).setName('Applied file types').setDesc('Only newly created files with these extensions receive the filename prefix and copied template contents. Enter extensions without dots, separated by commas (for example: md, canvas, PNG), or * for every extension. Matching is case-insensitive.')
+			.addText(text => text.setValue(this.scopeTabs.settings.templateFileAppliedTo).onChange(async value => {
+				this.scopeTabs.settings.templateFileAppliedTo = value || 'md';
+				await this.scopeTabs.vaultConfig.set('templateFileAppliedTo', this.scopeTabs.settings.templateFileAppliedTo);
+			}));
+		new Setting(containerEl).setName('Folder overrides')
+			.setDesc('Manage optional per-folder values. Each field inherits independently from its nearest parent or the vault defaults.')
+			.addButton(button => button.setButtonText('Manage overrides').onClick(() => new FolderTemplateOverridesModal(this.app, this.scopeTabs).open()));
 	}
 
 	private addFileExplorerOpenRadio(container: HTMLElement, value: FileExplorerOpenBehavior, labelText: string): void {
@@ -212,28 +271,8 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		input.addEventListener('change', () => {
 			if (!input.checked) return;
 			this.scopeTabs.settings.fileExplorerOpenBehavior = value;
-			void this.scopeTabs.saveSettings();
+			void this.scopeTabs.vaultConfig.set('fileExplorerOpenBehavior', value).then(() => this.scopeTabs.saveSettings());
 		});
-	}
-
-	private populateStartupNoteDropdown(dropdown: DropdownComponent, bookId: string | null): void {
-		dropdown.selectEl.empty();
-		dropdown.addOption('', 'Use the book entry note');
-		const book = this.scopeTabs.scopeResolver.listBooks().find((candidate) => candidate.id === bookId);
-		if (book) {
-			const prefix = `${book.folderPath}/`;
-			const files = this.app.vault.getMarkdownFiles()
-				.filter((file) => this.scopeTabs.scopeResolver.resolveFile(file)?.id === book.id)
-				.sort((left, right) => left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' }));
-			for (const file of files) {
-				const label = file.path.startsWith(prefix) ? file.path.slice(prefix.length).replace(/\.md$/i, '') : file.basename;
-				dropdown.addOption(file.path, label);
-			}
-		}
-		dropdown.setDisabled(!book);
-		const configured = this.scopeTabs.settings.defaultStartupNotePath;
-		const valid = book && configured && this.scopeTabs.scopeResolver.resolveFile(this.app.vault.getFileByPath(configured))?.id === book.id;
-		dropdown.setValue(valid ? configured : '');
 	}
 
 	private renderGridDimension(containerEl: HTMLElement, name: string, key: 'gridRows' | 'gridColumns'): void {
@@ -241,10 +280,12 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		let number: TextComponent;
 		const commit = async (value: number) => {
 			const normalized = Math.min(16, Math.max(2, Math.round(value)));
+			const previous = this.scopeTabs.settings[key];
 			this.scopeTabs.settings[key] = normalized;
 			slider.setValue(normalized);
 			number.setValue(String(normalized));
 			await this.scopeTabs.saveSettings();
+			if (normalized !== previous && this.scopeTabs.settings.bookSplitDirection === 'grid') this.scheduleGridRefill();
 		};
 		new Setting(containerEl)
 			.setName(name)
@@ -272,102 +313,62 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			});
 	}
 
+	private scheduleGridRefill(): void {
+		const ownerWindow = this.containerEl.ownerDocument.defaultView ?? window;
+		if (this.gridRefillTimer !== null) ownerWindow.clearTimeout(this.gridRefillTimer);
+		this.gridRefillTimer = ownerWindow.setTimeout(() => {
+			this.gridRefillTimer = null;
+			void this.scopeTabs.navigation.sortAllTabsIntoBooks()
+				.then(() => this.scopeTabs.decorations.refresh())
+				.catch((error: unknown) => {
+					console.error('Root Books Tabs could not refill the expanded Grid.', error);
+					new Notice('The grid size was saved, but the open books could not be rearranged automatically.');
+				});
+		}, 250);
+	}
+
 	private renderColors(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName('Book colors').setHeading();
-		const mode = new Setting(containerEl).setName('Color source').setDesc('Manual colors and frontmatter colors are mutually exclusive.');
-		this.addRadio(mode.controlEl, 'manual', 'Manual', this.scopeTabs.settings.colorMode);
-		this.addRadio(mode.controlEl, 'frontmatter', 'Frontmatter', this.scopeTabs.settings.colorMode);
-		this.manualSection = containerEl.createDiv({ cls: 'scope-tabs-conditional-section' });
-		this.renderManualColors(this.manualSection);
-		this.frontmatterSection = containerEl.createDiv({ cls: 'scope-tabs-conditional-section' });
-		this.renderFrontmatterColors(this.frontmatterSection);
-	}
-
-	private addRadio(container: HTMLElement, value: ColorMode, labelText: string, current: ColorMode): void {
-		const label = container.createEl('label', { cls: 'scope-tabs-radio-label' });
-		const input = label.createEl('input', { type: 'radio' });
-		input.name = 'scope-tabs-color-mode';
-		input.value = value;
-		input.checked = current === value;
-		label.appendText(labelText);
-		input.addEventListener('change', () => {
-			if (input.checked) void this.changeColorMode(value);
-		});
-	}
-
-	private async changeColorMode(value: ColorMode): Promise<void> {
-		this.scopeTabs.settings.colorMode = value;
-		this.updateConditionalSections();
-		await this.scopeTabs.saveSettings();
-		await this.scopeTabs.refreshColorConfiguration(true);
-	}
-
-	private renderManualColors(containerEl: HTMLElement): void {
-		containerEl.createEl('p', {
-			cls: 'setting-item-description',
-			text: 'First-level folders are detected automatically. These controls set the book color; background-style text colors are configured under decorations.',
-		});
-		for (const book of this.scopeTabs.scopeResolver.listBooks()) {
-			const row = new Setting(containerEl).setName(book.name);
-			row.settingEl.addClass('scope-tabs-manual-color-row');
-			const color = this.scopeTabs.settings.manualColors[book.id] ?? this.scopeTabs.colors.getColor(book);
-			const colorInput = row.controlEl.createEl('input', { type: 'color' });
-			colorInput.value = color;
-			const hexInput = row.controlEl.createEl('input', { type: 'text', cls: 'scope-tabs-hex-input' });
-			hexInput.value = color;
-			hexInput.placeholder = '#123456';
-			const commit = async (value: string) => {
-				if (!isHexColor(value)) return;
-				const normalized = value.toLowerCase();
-				this.scopeTabs.settings.manualColors[book.id] = normalized;
-				colorInput.value = normalized;
-				hexInput.value = normalized;
-				await this.scopeTabs.saveSettings();
-				this.scopeTabs.decorations.refresh();
-			};
-			colorInput.addEventListener('input', () => void commit(colorInput.value));
-			hexInput.addEventListener('change', () => {
-				if (!isHexColor(hexInput.value)) {
-					new Notice('Root books tabs colors must use #rrggbb format.');
-					hexInput.value = this.scopeTabs.settings.manualColors[book.id] ?? this.scopeTabs.colors.getColor(book);
-					return;
-				}
-				void commit(hexInput.value);
-			});
-		}
+		new Setting(containerEl).setName('Per book config').setHeading();
+		const books = this.scopeTabs.scopeResolver.listBooks();
+		const missing = this.scopeTabs.colors.getMissingConfigBooks(books);
+		new Setting(containerEl).setName('Create a config note for new books')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.vaultConfig.values.createBookIndex !== false).onChange(value => this.scopeTabs.vaultConfig.set('createBookIndex', value)))
+			.addButton(button => button.setButtonText(missing.length ? 'Create missing' : 'Regenerate all').onClick(async () => {
+				await this.scopeTabs.colors.createConfigFiles(missing.length ? missing : books);
+				await this.scopeTabs.refreshColorConfiguration(false);
+				this.update();
+			}));
+		new Setting(containerEl).setName('Hide new book config notes')
+			.setDesc('Adds the exact new config path to .obsidianignore. Enable the ignore plugin for vault-wide hiding.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.vaultConfig.values.hideNewBookIndex === true).onChange(value => this.scopeTabs.vaultConfig.set('hideNewBookIndex', value)));
+		new Setting(containerEl).setName('Automatic book colors').setDesc('Book frontmatter overrides automatic colors. Automatic colors stay local and survive resetting settings.')
+			.addButton(button => button.setButtonText('Add color override').onClick(() => new ColorOverridesModal(this.app, this.scopeTabs).open()));
+		this.renderFrontmatterColors(containerEl);
 	}
 
 	private renderFrontmatterColors(containerEl: HTMLElement): void {
-		new Setting(containerEl)
-			.setName('Book config note')
-			.setDesc('Markdown filename inside each first-level folder, without .md.')
-			.addText((text) => text.setValue(this.scopeTabs.settings.configFileBaseName).setPlaceholder('Index').onChange(async (value: string) => {
-				this.scopeTabs.settings.configFileBaseName = sanitizeConfigBaseName(value);
-				await this.scopeTabs.saveSettings();
-			}));
-		new Setting(containerEl)
-			.setName('Color frontmatter property')
-			.setDesc('The value must be #rrggbb. Missing or invalid values are added automatically.')
-			.addText((text) => text.setValue(this.scopeTabs.settings.colorFrontmatterProperty).setPlaceholder('Color').onChange(async (value: string) => {
-				this.scopeTabs.settings.colorFrontmatterProperty = sanitizeFrontmatterProperty(value);
-				await this.scopeTabs.saveSettings();
-			}));
+		let base = this.scopeTabs.settings.configFileBaseName, key = this.scopeTabs.settings.colorFrontmatterProperty;
+		new Setting(containerEl).setName('Book config note').setDesc('Filename without .md. Apply renames existing book and subfolder config notes.')
+			.addText(text => text.setValue(base).onChange(value => { base = sanitizeConfigBaseName(value); }));
+		new Setting(containerEl).setName('Color frontmatter property').setDesc('Apply renames existing color fields while preserving other properties.')
+			.addText(text => text.setValue(key).onChange(value => { key = sanitizeFrontmatterProperty(value); }));
+		new Setting(containerEl).addButton(button => button.setButtonText('Apply config names').onClick(async () => {
+			try { await this.scopeTabs.colors.renameConfiguration(base, key); this.update(); }
+			catch (error) { new Notice(error instanceof Error ? error.message : 'Could not rename configuration.'); }
+		}));
 		new Setting(containerEl)
 			.setName('Notify about missing config notes')
 			.addToggle((toggle) => toggle.setValue(this.scopeTabs.settings.notifyMissingConfigFiles).onChange(async (value: boolean) => {
 				this.scopeTabs.settings.notifyMissingConfigFiles = value;
 				await this.scopeTabs.saveSettings();
 			}));
-		new Setting(containerEl)
-			.setName('Manage missing config notes')
-			.addButton((button) => button.setButtonText('Open manager').onClick(() => this.scopeTabs.openMissingConfigManager()));
 	}
 
 	private renderDecorations(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Decorations').setHeading();
 		new Setting(containerEl)
 			.setName('Show book name above notes')
-			.setDesc('Markdown notes only; resource tabs still receive book color.')
+			.setDesc('Show the book name and navigation arrows above every supported Obsidian file view.')
 			.addToggle((toggle) => toggle.setValue(this.scopeTabs.settings.showBookLabel).onChange(async (value: boolean) => {
 				this.scopeTabs.settings.showBookLabel = value;
 				await this.scopeTabs.saveSettings();
@@ -411,8 +412,6 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	}
 
 	private updateConditionalSections(): void {
-		this.manualSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'manual');
-		this.frontmatterSection?.toggleClass('is-hidden', this.scopeTabs.settings.colorMode !== 'frontmatter');
 		this.tabOptionsSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs);
 		this.customCssSection?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs || this.scopeTabs.settings.tabDecorationStyle !== 'custom');
 		this.backgroundTextButton?.toggleClass('is-hidden', !this.scopeTabs.settings.colorTabs || this.scopeTabs.settings.tabDecorationStyle !== 'background');
@@ -427,11 +426,192 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			.setName('Reset settings')
 			.setDesc('Restore all root books tabs settings to defaults. Runtime group ownership is retained.')
 			.addButton((button) => button.setDestructive().setButtonText('Reset to defaults').onClick(async () => {
+				try {
+					await this.scopeTabs.colors.renameConfiguration(DEFAULT_SETTINGS.configFileBaseName, DEFAULT_SETTINGS.colorFrontmatterProperty, DEFAULT_SETTINGS.tabTextFrontmatterProperty);
+				} catch (error) {
+					new Notice(error instanceof Error ? error.message : 'Could not restore config names.');
+					return;
+				}
+				const automaticColors = this.scopeTabs.settings.manualColors;
 				this.scopeTabs.settings = structuredClone(DEFAULT_SETTINGS);
+				this.scopeTabs.settings.manualColors = automaticColors;
 				await this.scopeTabs.saveSettings();
+				void this.scopeTabs.linkMaintenance.enforce();
 				await this.scopeTabs.refreshColorConfiguration(false);
 				this.update();
 			}));
+	}
+
+	private renderHiddenAndExcluded(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName('Hidden and excluded').setHeading();
+		new Setting(containerEl).setName('Hidden paths').setHeading();
+		const description = containerEl.createEl('p', { cls: 'setting-item-description', text: 'Install the ignore community plugin for exclusions across Obsidian. ' });
+		description.createEl('a', { text: 'Install ignore', href: 'https://community.obsidian.md/plugins/ignore' });
+		new Setting(containerEl).setName('Hide a file or folder').setDesc('Literal vault-relative paths; selecting a folder includes its contents.')
+			.addButton(button => button.setButtonText('Add hidden path').onClick(() => new VaultPathModal(this.app, this.scopeTabs, async file => {
+				await this.scopeTabs.bookIgnore.add(file); this.update();
+			}).open()));
+		for (const entry of this.scopeTabs.bookIgnore.entries()) new Setting(containerEl).setName(entry.startsWith('/') ? `.${entry}` : entry)
+			.addExtraButton(button => button.setIcon('x').setTooltip('Remove this exclusion').onClick(async () => { await this.scopeTabs.bookIgnore.remove(entry); this.update(); }));
+		new Setting(containerEl).setName('Excluded first-level folders').setHeading();
+		new Setting(containerEl).setName('Exclude a folder from books').setDesc('Excluded folders remain ordinary Obsidian folders and never receive generated config notes.')
+			.addButton(button => button.setButtonText('Add excluded folder').onClick(() => new ExcludedFolderModal(this.app, this.scopeTabs).open()));
+		new Setting(containerEl).setName('Excluded file group location')
+			.setDesc('Open files from every excluded folder in one dedicated tab group, either beside the active tab group or in a pop-out window.')
+			.addDropdown(dropdown => dropdown
+				.addOptions({ 'next-to-current': 'Next to current tab group', popout: 'Pop-out window' })
+				.setValue(this.scopeTabs.settings.excludedFileGroupLocation)
+				.onChange(async value => {
+					this.scopeTabs.settings.excludedFileGroupLocation = value as typeof this.scopeTabs.settings.excludedFileGroupLocation;
+					await this.scopeTabs.vaultConfig.set('excludedFileGroupLocation', value);
+				}));
+		for (const path of this.scopeTabs.settings.excludedBookFolders) new Setting(containerEl).setName(path)
+			.addExtraButton(button => button.setIcon('x').setTooltip('Include this folder in the book system').onClick(async () => {
+				this.scopeTabs.settings.excludedBookFolders = this.scopeTabs.settings.excludedBookFolders.filter(value => value !== path);
+				await this.scopeTabs.vaultConfig.set('excludedBookFolders', this.scopeTabs.settings.excludedBookFolders);
+				await this.scopeTabs.handleScopeConfigurationChange();
+				this.update();
+			}));
+	}
+}
+
+class ExcludedFolderModal extends FuzzySuggestModal<TFolder> {
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin) {
+		super(app);
+		this.setPlaceholder('Choose a first-level folder');
+	}
+	getItems(): TFolder[] {
+		const excluded = new Set(this.plugin.settings.excludedBookFolders);
+		return this.app.vault.getRoot().children.filter((entry): entry is TFolder => entry instanceof TFolder && !excluded.has(entry.path));
+	}
+	getItemText(folder: TFolder): string { return folder.name; }
+	onChooseItem(folder: TFolder): void {
+		void (async () => {
+			this.plugin.settings.excludedBookFolders = [...new Set([...this.plugin.settings.excludedBookFolders, folder.path])];
+			await this.plugin.vaultConfig.set('excludedBookFolders', this.plugin.settings.excludedBookFolders);
+			await this.plugin.handleScopeConfigurationChange();
+		})().catch(console.error);
+	}
+}
+
+class FolderTemplateOverridesModal extends Modal {
+	private selectedPath = '';
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin) { super(app); }
+	onOpen(): void {
+		this.selectedPath = this.plugin.templates.discoverFolderOverrides()[0]?.folder.path
+			?? this.folders()[0]?.path
+			?? '';
+		this.render();
+	}
+	private folders(): TFolder[] {
+		return this.app.vault.getAllLoadedFiles().filter((entry): entry is TFolder => entry instanceof TFolder && !entry.isRoot())
+			.sort((left, right) => left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' }));
+	}
+	private render(): void {
+		this.contentEl.empty();
+		this.titleEl.setText('Folder template overrides');
+		const folders = this.folders();
+		if (!folders.length) {
+			this.contentEl.createEl('p', { text: 'No book folders are available.' });
+			return;
+		}
+		if (!folders.some(folder => folder.path === this.selectedPath)) this.selectedPath = folders[0]!.path;
+		new Setting(this.contentEl).setName('Folder').addDropdown(dropdown => {
+			for (const folder of folders) dropdown.addOption(folder.path, folder.path);
+			dropdown.setValue(this.selectedPath).onChange(value => { this.selectedPath = value; this.render(); });
+		});
+		const folder = this.app.vault.getFolderByPath(this.selectedPath);
+		if (!folder) return;
+		const existing = this.plugin.templates.readFolderOverrides(folder);
+		const draft: FolderTemplateOverrides = { ...existing };
+		const add = (name: string, description: string, key: keyof FolderTemplateOverrides) => new Setting(this.contentEl)
+			.setName(name).setDesc(description)
+			.addText(text => text.setPlaceholder('Inherit').setValue(existing[key] ?? '').onChange(value => { draft[key] = value || undefined; }));
+		add('Filename prefix', 'Optional. Use {{date}} for the configured date.', 'templateFilePrefix');
+		add('Date format', 'Optional Moment-style date format.', 'templateFileDate');
+		add('Template file', 'Optional vault-relative source path.', 'templateFilePath');
+		add('Applied file types', 'Optional extension filter without dots. Separate values with commas; * matches every extension. The prefix and template contents apply only to matching new files.', 'templateFileAppliedTo');
+		new Setting(this.contentEl).setDesc('Blank values inherit independently from the nearest parent config or root defaults.')
+			.addButton(button => button.setButtonText('Save overrides').setCta().onClick(async () => {
+				await this.plugin.templates.writeFolderOverrides(folder, draft);
+				this.render();
+			}));
+		const discovered = this.plugin.templates.discoverFolderOverrides();
+		if (discovered.length) {
+			new Setting(this.contentEl).setName('Folders with overrides').setHeading();
+			for (const entry of discovered) new Setting(this.contentEl).setName(entry.folder.path)
+				.setDesc(Object.entries(entry.overrides).map(([key, value]) => `${key}: ${value}`).join(' · '));
+		}
+	}
+}
+
+class ColorOverridesModal extends Modal {
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin) { super(app); }
+	onOpen(): void { this.render(); }
+	private render(): void {
+		this.contentEl.empty(); this.titleEl.setText('Book color overrides');
+		const books = this.plugin.scopeResolver.listBooks();
+		let selected = books[0]?.id ?? '', color = '#5588cc', foreground = 'white';
+		new Setting(this.contentEl).setName('Book').addDropdown(dropdown => {
+			for (const book of books) dropdown.addOption(book.id, book.name);
+			dropdown.setValue(selected).onChange(value => { selected = value; });
+		});
+		new Setting(this.contentEl).setName('Color').addColorPicker(picker => picker.setValue(color).onChange(value => { color = value; }));
+		new Setting(this.contentEl).setName('Background tab text').setDesc('White, black, or a CSS hex color.')
+			.addText(text => text.setValue(foreground).onChange(value => { foreground = value; }));
+		new Setting(this.contentEl).addButton(button => button.setButtonText('Save override').setCta().onClick(async () => {
+			const book = books.find(book => book.id === selected); if (!book) return;
+			try { await this.plugin.colors.setOverride(book, color, foreground); window.setTimeout(() => this.render(), 150); }
+			catch (error) { new Notice(error instanceof Error ? error.message : 'Enter a valid color and text color.'); }
+		}));
+		const box = this.contentEl.createDiv({ cls: 'scope-tabs-overrides-box' });
+		for (const book of books.filter(book => this.plugin.colors.hasOverride(book))) new Setting(box).setName(book.name)
+			.setDesc(`${this.plugin.colors.getColor(book)} / ${this.plugin.colors.getTabTextColor(book)}`)
+			.addExtraButton(button => button.setIcon('x').setTooltip('Remove override and roll a new automatic color').onClick(async () => {
+				await this.plugin.colors.removeOverride(book); window.setTimeout(() => this.render(), 150);
+			}));
+	}
+}
+
+class VaultPathModal extends FuzzySuggestModal<TAbstractFile> {
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin, private readonly choose: (file: TAbstractFile) => Promise<void>, private readonly opening = false) {
+		super(app); this.setPlaceholder('Search vault paths');
+	}
+	getItems(): TAbstractFile[] {
+		return this.app.vault.getAllLoadedFiles().filter(file => file.path && file.path !== '/' && (this.opening
+			? file instanceof TFile && file.extension === 'md' || file instanceof TFolder && file.parent?.isRoot()
+			: !this.plugin.bookIgnore.isHidden(file)));
+	}
+	getItemText(file: TAbstractFile): string { return `./${file.path}${file instanceof TFolder ? '/' : ''}`; }
+	onChooseItem(file: TAbstractFile): void { void this.choose(file).catch((error: unknown) => { console.error(error); new Notice('Could not save the selected path.'); }); }
+}
+
+export class CreateBookModal extends Modal {
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin) { super(app); }
+	onOpen(): void {
+		this.titleEl.setText('Create a new book');
+		let name = '';
+		new Setting(this.contentEl).setName('Book name').addText(text => text.onChange(value => { name = value.trim(); }));
+		new Setting(this.contentEl).addButton(button => button.setButtonText('Create book').setCta().onClick(async () => {
+			if (!name || /[\\/:*?"<>|]/.test(name) || name === '.' || name === '..') { new Notice('Enter a valid first-level folder name.'); return; }
+			button.setDisabled(true);
+			try {
+				const folder = await this.app.vault.createFolder(name);
+				if (this.plugin.settings.excludedBookFolders.includes(folder.path)) {
+					await this.plugin.handleScopeConfigurationChange();
+					new Notice(`${folder.name} was created as an excluded folder.`);
+					this.close();
+					return;
+				}
+				if (this.plugin.vaultConfig.values.createBookIndex !== false) {
+					const file = await this.plugin.bookOrder.ensureConfig(folder);
+					if (this.plugin.vaultConfig.values.hideNewBookIndex === true) await this.plugin.bookIgnore.add(file);
+				}
+				this.plugin.settings.selectedBookId = folder.path;
+				await this.plugin.saveSettings();
+				this.plugin.decorations.refresh(); this.close();
+			} catch (error) { console.error(error); new Notice('Could not create the book. Check whether its name already exists.'); button.setDisabled(false); }
+		}));
 	}
 }
 
@@ -440,7 +620,11 @@ class BookNoteOpeningOverridesModal extends Modal {
 
 	constructor(app: App, private readonly plugin: ScopeTabsPlugin) {
 		super(app);
-		this.draft = { ...plugin.settings.bookNoteOpenModeOverrides };
+		this.draft = {};
+		for (const book of plugin.scopeResolver.listBooks()) {
+			const mode = plugin.navigation.getBookNoteOpenModeOverride(book);
+			if (mode) this.draft[book.id] = mode;
+		}
 	}
 
 	onOpen(): void {
@@ -473,7 +657,7 @@ class BookNoteOpeningOverridesModal extends Modal {
 	}
 
 	private async apply(): Promise<void> {
-		this.plugin.settings.bookNoteOpenModeOverrides = { ...this.draft };
+		for (const book of this.plugin.scopeResolver.listBooks()) await this.plugin.navigation.setBookNoteOpenMode(book, this.draft[book.id] ?? null);
 		this.plugin.navigation.resetBookHistories();
 		await this.plugin.saveSettings();
 		this.close();
@@ -564,7 +748,12 @@ class BackgroundTabTextModal extends Modal {
 				this.plugin.settings.manualTabTextColors[book.id] = this.manualDraft[book.id] ?? '#ffffff';
 			}
 		} else {
-			this.plugin.settings.tabTextFrontmatterProperty = sanitizeTabTextFrontmatterProperty(this.propertyDraft);
+			try {
+				await this.plugin.colors.renameConfiguration(this.plugin.settings.configFileBaseName, this.plugin.settings.colorFrontmatterProperty, sanitizeTabTextFrontmatterProperty(this.propertyDraft));
+			} catch (error) {
+				new Notice(error instanceof Error ? error.message : 'Could not rename the tab text property.');
+				return;
+			}
 		}
 		await this.plugin.saveSettings();
 		this.plugin.decorations.refresh();
@@ -656,52 +845,3 @@ const PREVIEW_BASE_CSS = `
 .workspace-tab-header { padding:10px 14px; border-radius:6px 6px 0 0; background:#303030; }
 .workspace-tab-header.is-active { background:#454545; }
 `;
-
-export class MissingConfigModal extends Modal {
-	private selected = new Set<string>();
-
-	constructor(app: App, private readonly plugin: ScopeTabsPlugin, private readonly books: BookScope[]) {
-		super(app);
-	}
-
-	onOpen(): void {
-		this.contentEl.empty();
-		this.contentEl.createEl('h2', { text: 'Missing root books tabs book config notes' });
-		if (this.books.length === 0) {
-			this.contentEl.createEl('p', { text: 'Every first-level folder already contains the configured book note.' });
-			return;
-		}
-		this.contentEl.createEl('p', { text: 'Select books to create. Existing files are never overwritten; missing color frontmatter is added idempotently.' });
-		for (const book of this.books) {
-			const row = new Setting(this.contentEl).setName(book.name).setDesc(this.plugin.colors.getConfigPath(book));
-			row.addToggle((toggle) => toggle.onChange((value: boolean) => {
-				if (value) this.selected.add(book.id);
-				else this.selected.delete(book.id);
-			}));
-		}
-		const buttons = this.contentEl.createDiv({ cls: 'scope-tabs-modal-buttons' });
-		buttons.createEl('button', { text: 'Create selected' }).addEventListener('click', () => void this.createSelected());
-		buttons.createEl('button', { text: 'Create all' }).addEventListener('click', () => void this.createAll());
-		buttons.createEl('button', { text: 'Never notify me' }).addEventListener('click', () => void this.disableNotifications());
-	}
-
-	private async createSelected(): Promise<void> {
-		const selectedBooks = this.books.filter((book) => this.selected.has(book.id));
-		if (selectedBooks.length === 0) return;
-		await this.plugin.colors.createConfigFiles(selectedBooks);
-		await this.plugin.refreshColorConfiguration(false);
-		this.close();
-	}
-
-	private async createAll(): Promise<void> {
-		await this.plugin.colors.createConfigFiles(this.books);
-		await this.plugin.refreshColorConfiguration(false);
-		this.close();
-	}
-
-	private async disableNotifications(): Promise<void> {
-		this.plugin.settings.notifyMissingConfigFiles = false;
-		await this.plugin.saveSettings();
-		this.close();
-	}
-}
