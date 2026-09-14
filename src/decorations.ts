@@ -46,8 +46,9 @@ interface ExplorerTreeItemAdapter {
 interface ExplorerTreeAdapter {
 	rootItems: ExplorerTreeItemAdapter[];
 	itemsByPath: Map<string, ExplorerTreeItemAdapter>;
-	reorder: (paths: string[], external?: { paths: readonly string[]; container: HTMLElement }) => void;
+	reorder: (paths: string[]) => void;
 	restoreOrder: () => void;
+	toggleFolder: (path: string) => boolean;
 	invalidate: () => void;
 }
 
@@ -585,7 +586,7 @@ export class DecorationController {
 		root.querySelectorAll('.scope-tabs-book-subtree-controls').forEach((controls) => controls.remove());
 		root.querySelectorAll('.scope-tabs-empty-book').forEach(el => el.remove());
 		if (restoreOrder) tree?.restoreOrder();
-		for (const child of Array.from(decoration.excludedBody.children)) decoration.files.appendChild(child);
+		decoration.excludedBody.empty();
 		tree?.invalidate();
 		decoration.toggle.remove();
 		decoration.bar.remove();
@@ -625,6 +626,61 @@ export class DecorationController {
 			const header = root.createDiv({ cls: 'scope-tabs-book-header' });
 			filesParent.insertBefore(header, files);
 			hideExcluded.addEventListener('click', () => this.setExcludedFoldersVisible(root, false));
+			const forwardExcludedTreeEvent = (event: MouseEvent | KeyboardEvent): void => {
+				const target = getEventElement(event);
+				const cloneTitle = target?.closest<HTMLElement>('.nav-file-title, .nav-folder-title');
+				const cloneItem = cloneTitle?.closest<HTMLElement>('.nav-file, .nav-folder');
+				const path = cloneItem ? getExplorerItemPath(cloneItem) : '';
+				if (!cloneTitle || !path) return;
+				const activate = event.type === 'click' || event instanceof KeyboardEvent;
+				if (activate) {
+					event.preventDefault();
+					event.stopPropagation();
+					if (cloneItem?.hasClass('nav-folder')) {
+						getExplorerTreeAdapter(this.plugin, root)?.toggleFolder(path);
+					} else {
+						const file = this.plugin.app.vault.getFileByPath(path);
+						const leaf = this.plugin.app.workspace.getMostRecentLeaf() ?? this.plugin.app.workspace.getLeaf(false);
+						if (file && leaf) {
+							this.plugin.navigation.expectFileExplorerOpen(path);
+							void leaf.openFile(file).catch(error => console.error(`Root Books Tabs could not open excluded file ${path}.`, error));
+						}
+					}
+					window.setTimeout(() => this.queueExplorerRefresh(), 0);
+					return;
+				}
+				const originalItem = Array.from(files.querySelectorAll<HTMLElement>('.nav-file, .nav-folder'))
+					.find(item => getExplorerItemPath(item) === path);
+				if (!originalItem) return;
+				const titleSelector = cloneTitle.hasClass('nav-folder-title') ? ':scope > .nav-folder-title' : ':scope > .nav-file-title';
+				const originalTitle = originalItem.querySelector<HTMLElement>(titleSelector);
+				if (!originalTitle) return;
+				const originalTarget = target?.closest('.nav-folder-collapse-indicator')
+					? originalTitle.querySelector<HTMLElement>('.nav-folder-collapse-indicator') ?? originalTitle
+					: originalTitle;
+				event.preventDefault();
+				event.stopPropagation();
+				const mouseEvent = event;
+				originalTarget.dispatchEvent(new MouseEvent(mouseEvent.type, {
+					bubbles: true,
+					cancelable: true,
+					view: root.ownerDocument.defaultView,
+					button: mouseEvent.button,
+					buttons: mouseEvent.buttons,
+					clientX: mouseEvent.clientX,
+					clientY: mouseEvent.clientY,
+					ctrlKey: mouseEvent.ctrlKey,
+					shiftKey: mouseEvent.shiftKey,
+					altKey: mouseEvent.altKey,
+					metaKey: mouseEvent.metaKey,
+				}));
+			};
+			excludedBody.addEventListener('click', forwardExcludedTreeEvent);
+			excludedBody.addEventListener('contextmenu', forwardExcludedTreeEvent);
+			excludedBody.addEventListener('keydown', (event: KeyboardEvent) => {
+				if (event.key === 'Enter' || event.key === ' ') forwardExcludedTreeEvent(event);
+			});
+			excludedBody.addEventListener('dragstart', event => event.preventDefault());
 			const bar = header.createEl('button', {
 				cls: 'scope-tabs-book-switcher',
 				attr: { type: 'button', 'aria-haspopup': 'menu' },
@@ -677,15 +733,13 @@ export class DecorationController {
 				this.plugin.navigation.closeAllSecondaryBooks(primaryBookId);
 				this.queueExplorerRefresh();
 			});
-			const observer = new MutationObserver(() => {
+			const observer = new MutationObserver((mutations) => {
+				if (mutations.every(mutation => mutation.target === excludedBody || excludedBody.contains(mutation.target))) return;
 				const current = this.explorerDecorations.get(root);
 				if (!current) return;
 				const liveActions = root.querySelector<HTMLElement>('.nav-buttons-container');
 				const liveFiles = root.querySelector<HTMLElement>('.nav-files-container');
-				const tree = this.explorersShowingExcluded.has(root) ? getExplorerTreeAdapter(this.plugin, root) : null;
-				const excludedTreeMoved = this.explorersShowingExcluded.has(root)
-					&& this.plugin.scopeResolver.listExcludedFolders().some(folder => tree?.itemsByPath.get(folder.id)?.el.parentElement !== current.excludedBody);
-				if (liveActions !== current.actions || liveFiles !== current.files || !current.modelReady || excludedTreeMoved) this.queueExplorerRefresh();
+				if (liveActions !== current.actions || liveFiles !== current.files || !current.modelReady) this.queueExplorerRefresh();
 			});
 			observer.observe(root, { childList: true, subtree: true });
 			const markExplorerOpen = (event: Event) => {
@@ -780,7 +834,7 @@ export class DecorationController {
 			for (const item of rootItems.values()) item.querySelector(':scope > .scope-tabs-book-subtree-controls')?.remove();
 			decoration.excludedPanel.removeClass('is-open');
 			decoration.excludedPanel.setAttr('aria-hidden', 'true');
-			for (const child of Array.from(decoration.excludedBody.children)) decoration.files.appendChild(child);
+			decoration.excludedBody.empty();
 			tree?.restoreOrder();
 			tree?.invalidate();
 			decoration.bookActions.remove();
@@ -796,7 +850,7 @@ export class DecorationController {
 		decoration.excludedPanel.toggleClass('is-open', showExcluded);
 		decoration.excludedPanel.setAttr('aria-hidden', String(!showExcluded));
 		if (showExcluded) for (const path of excludedPaths) tree?.itemsByPath.get(path)?.syncChildren();
-		tree?.reorder([selected.id, ...secondaryPaths], showExcluded ? { paths: excludedPaths, container: decoration.excludedBody } : undefined);
+		tree?.reorder([selected.id, ...secondaryPaths]);
 		const expandedBeforeToggle = this.excludedExpandedBeforeBookModeOff.get(root);
 		if (showExcluded && expandedBeforeToggle) {
 			this.excludedExpandedBeforeBookModeOff.delete(root);
@@ -809,7 +863,7 @@ export class DecorationController {
 			if (excludedPathSet.has(path) && item.hasClass('nav-folder')) {
 				subtreeControls?.remove();
 				item.addClass('scope-tabs-book-mode-excluded');
-				item.toggleClass('scope-tabs-book-mode-excluded-hidden', !showExcluded);
+				item.addClass('scope-tabs-book-mode-excluded-hidden');
 			} else if (path === selected.folderPath && item.hasClass('nav-folder')) {
 				selectedItem = item;
 				subtreeControls?.remove();
@@ -830,6 +884,7 @@ export class DecorationController {
 				item.addClass('scope-tabs-book-mode-hidden');
 			}
 		}
+		this.renderExcludedFolderTree(decoration, tree, excludedPaths, showExcluded);
 		const showOpenAnother = true;
 		const showCloseAll = secondaryPaths.length > 0;
 		if (selectedItem) {
@@ -843,6 +898,24 @@ export class DecorationController {
 		}
 		this.renderEmptyBook(root, decoration, selected);
 		tree?.invalidate();
+	}
+
+	private renderExcludedFolderTree(decoration: ExplorerDecoration, tree: ExplorerTreeAdapter | null, paths: readonly string[], show: boolean): void {
+		decoration.excludedBody.empty();
+		if (!show || !tree) return;
+		for (const path of paths) {
+			const item = tree.itemsByPath.get(path);
+			if (!item) continue;
+			const clone = item.el.cloneNode(true);
+			if (!isHtmlElement(clone, decoration.excludedBody.ownerDocument)) continue;
+			clone.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-mode-excluded-hidden', 'scope-tabs-book-root-title-hidden']);
+			clone.addClasses(['scope-tabs-book-mode-excluded', 'scope-tabs-excluded-tree-clone']);
+			clone.style.removeProperty('order');
+			clone.querySelectorAll<HTMLElement>('[id]').forEach(element => element.removeAttribute('id'));
+			clone.querySelectorAll<HTMLElement>('[draggable="true"]').forEach(element => element.setAttr('draggable', 'false'));
+			clone.querySelectorAll('.scope-tabs-book-subtree-controls, .scope-tabs-book-actions, .scope-tabs-empty-book').forEach(element => element.remove());
+			decoration.excludedBody.appendChild(clone);
+		}
 	}
 
 	private renderEmptyBook(root: HTMLElement, decoration: ExplorerDecoration, book: BookScope): void {
@@ -1702,12 +1775,10 @@ function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): Exp
 	return {
 		rootItems,
 		itemsByPath,
-		reorder: (paths, external) => {
-			const externalPaths = new Set(external?.paths ?? []);
+		reorder: (paths) => {
 			const ordered: object[] = [];
 			const seen = new Set<object>();
 			for (const path of paths) {
-				if (externalPaths.has(path)) continue;
 				const item = itemsByPath.get(path)?.identity;
 				if (!item || seen.has(item)) continue;
 				seen.add(item);
@@ -1718,17 +1789,19 @@ function getExplorerTreeAdapter(plugin: ScopeTabsPlugin, root: HTMLElement): Exp
 				seen.add(item);
 				ordered.push(item);
 			}
-			if (!setOrder(ordered)) return;
-			const nativeContainer = root.querySelector<HTMLElement>('.nav-files-container');
-			if (nativeContainer) for (const item of rootItems) {
-				if (!externalPaths.has(item.path) && item.el.closest('.scope-tabs-excluded-panel-body')) nativeContainer.appendChild(item.el);
-			}
-			if (external) for (const path of external.paths) {
-				const item = itemsByPath.get(path);
-				if (item && item.el.parentElement !== external.container) external.container.appendChild(item.el);
-			}
+			setOrder(ordered);
 		},
 		restoreOrder: () => { setOrder(baseOrder); },
+		toggleFolder: (path) => {
+			const item: unknown = fileItems[path];
+			if (!isUnknownRecord(item) || typeof item.setCollapsed !== 'function' || typeof item.collapsed !== 'boolean') return false;
+			try {
+				void Reflect.apply(item.setCollapsed, item, [!item.collapsed, false]);
+				return true;
+			} catch {
+				return false;
+			}
+		},
 		invalidate,
 	};
 }

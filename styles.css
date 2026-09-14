@@ -468,8 +468,6 @@ body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
 }
 
 .scope-tabs-excluded-panel.is-open {
-	position: relative;
-	z-index: 4;
 	max-height: 45vh;
 	margin: 8px;
 	padding: 0 8px 8px;
@@ -494,8 +492,6 @@ body .workspace-tab-header.scope-tabs-color-tab.scope-tabs-close-target {
 }
 
 .scope-tabs-excluded-panel-body {
-	position: relative;
-	z-index: 1;
 	max-height: calc(45vh - 2.25rem);
 	overflow: auto;
 }
