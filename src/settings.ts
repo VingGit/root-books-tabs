@@ -251,7 +251,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				this.scopeTabs.settings.templateFilePath = value.replace(/^\.\//, '');
 				await this.scopeTabs.vaultConfig.set('templateFilePath', this.scopeTabs.settings.templateFilePath);
 			}));
-		new Setting(containerEl).setName('Applied file types').setDesc('Only newly created files with these extensions receive the filename prefix and copied template contents. Enter extensions without dots, separated by commas (for example: md, canvas, PNG), or * for every extension. Matching is case-insensitive.')
+		new Setting(containerEl).setName('Applied file types').setDesc('An inclusion list for new files created in a folder. Listed extensions receive the folder template filename treatment (prefix and date) and copied template contents; unlisted file types are left unchanged. Enter extensions without dots, separated by commas (for example: md, canvas, PNG), or * for every extension. Matching is case-insensitive. Default: md.')
 			.addText(text => text.setValue(this.scopeTabs.settings.templateFileAppliedTo).onChange(async value => {
 				this.scopeTabs.settings.templateFileAppliedTo = value || 'md';
 				await this.scopeTabs.vaultConfig.set('templateFileAppliedTo', this.scopeTabs.settings.templateFileAppliedTo);
@@ -530,7 +530,7 @@ class FolderTemplateOverridesModal extends Modal {
 		add('Filename prefix', 'Optional. Use {{date}} for the configured date.', 'templateFilePrefix');
 		add('Date format', 'Optional Moment-style date format.', 'templateFileDate');
 		add('Template file', 'Optional vault-relative source path.', 'templateFilePath');
-		add('Applied file types', 'Optional extension filter without dots. Separate values with commas; * matches every extension. The prefix and template contents apply only to matching new files.', 'templateFileAppliedTo');
+		add('Applied file types', 'Inclusion list for new files in this folder. Listed extensions receive the template filename treatment and contents; unlisted types are unchanged. Enter extensions without dots, separated by commas, or * for every extension. The default is md.', 'templateFileAppliedTo');
 		new Setting(this.contentEl).setDesc('Blank values inherit independently from the nearest parent config or root defaults.')
 			.addButton(button => button.setButtonText('Save overrides').setCta().onClick(async () => {
 				await this.plugin.templates.writeFolderOverrides(folder, draft);

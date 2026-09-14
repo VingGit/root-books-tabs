@@ -47,8 +47,8 @@ const HELP: Record<string, string> = {
 	'template-file-prefix': 'Prefix for newly created matching files. Use {{date}} to insert the formatted date.',
 	'template-file-date': 'Moment-style creation-date format. Name collisions add a time suffix.',
 	'template-file-path': 'Vault-relative template file copied into newly created matching files.',
-	'template-file-applied-To': 'Comma-separated file extensions, or * for all supported file types.',
-	'template-file-applied-to': 'Comma-separated file extensions, or * for all supported file types.',
+	'template-file-applied-To': 'Inclusion list for new files: matching extensions receive the template filename and contents; unlisted types are unchanged. Comma-separated without dots, or * for all. Default md.',
+	'template-file-applied-to': 'Inclusion list for new files: matching extensions receive the template filename and contents; unlisted types are unchanged. Comma-separated without dots, or * for all. Default md.',
 };
 
 const LEGACY_HELP: Record<string, readonly string[]> = {
