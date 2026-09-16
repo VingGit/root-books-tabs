@@ -158,6 +158,9 @@ export default class ScopeTabsPlugin extends Plugin {
 		this.registerEvent(this.app.workspace.on('window-close', (workspaceWindow) => {
 			this.navigation.handleWindowClose(workspaceWindow);
 		}));
+		this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+			if (file instanceof TFolder) this.decorations.addFolderNoteMenu(menu, file);
+		}));
 		this.registerEvent(this.app.workspace.on('quit', () => {
 			this.navigation.prepareForQuit();
 		}));
@@ -165,8 +168,7 @@ export default class ScopeTabsPlugin extends Plugin {
 			void (async () => {
 				if (file instanceof TFile && this.scopeResolver.hasMultipleBooks() && this.scopeResolver.resolveFile(file)) await this.templates.handleCreate(file);
 				if (file instanceof TFolder && file.parent?.isRoot() && this.scopeResolver.listBooks().some(book => book.id === file.path) && this.vaultConfig.values.createBookIndex !== false) {
-					const note = await this.bookOrder.ensureConfig(file);
-					if (this.vaultConfig.values.hideNewBookIndex === true) await this.bookIgnore.add(note);
+					await this.bookOrder.ensureConfig(file);
 				}
 				await this.bookOrder.syncStructure(file);
 				await this.handleVaultStructureChange();

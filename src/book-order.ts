@@ -19,6 +19,8 @@ export class BookOrderService {
 		return folder.isRoot() ? 'index.md' : `${folder.path}/${this.plugin.settings.configFileBaseName}.md`;
 	}
 
+	getConfigPath(folder: TFolder): string { return this.configPath(folder); }
+
 	private isConfigNote(item: TAbstractFile): boolean {
 		return item instanceof TFile && !!item.parent && item.path === this.configPath(item.parent);
 	}

@@ -111,6 +111,14 @@ test('obsolete generated Grid boundary settings are removed without deleting an 
 	assert.equal('book-tabs-gridBoundaryThickness' in f.fm, false);
 });
 
+test('retired config-note ignore setting is removed without touching an unowned plain collision', async () => {
+	const f = fixture({ hideNewBookIndex: 'my own value', 'book-tabs-hideNewBookIndex': true });
+	await f.service.ensureRoot();
+	assert.equal(f.fm.hideNewBookIndex, 'my own value');
+	assert.equal('book-tabs-hideNewBookIndex' in f.fm, false);
+	assert.equal('hideNewBookIndex' in f.service.values, false);
+});
+
 test('the original applied file types field is removed when its generated help proves ownership', async () => {
 	const content = '---\n# Comma-separated file extensions, or * for all supported file types.\ntemplate-file-applied-To: md\n---\nKeep this body';
 	const f = fixture({ 'template-file-applied-To': 'md' }, content);

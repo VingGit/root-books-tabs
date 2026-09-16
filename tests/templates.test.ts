@@ -35,7 +35,9 @@ function fixture() {
 				getAbstractFileByPath: (path: string) => files.get(path) ?? null,
 				getFileByPath: (path: string) => files.get(path) instanceof TFile ? files.get(path) as TFile : null,
 				getMarkdownFiles: () => [...files.values()].filter((file): file is TFile => file instanceof TFile && file.extension === 'md'),
-				read: async (file: TFile) => `---\n${JSON.stringify(frontmatter.get(file.path) ?? {})}\n---\n`,
+				read: async (file: TFile) => binary.has(file.path)
+					? new TextDecoder().decode(binary.get(file.path))
+					: `---\n${JSON.stringify(frontmatter.get(file.path) ?? {})}\n---\n`,
 				process: async (_file: TFile, change: (content: string) => string) => { change('---\n{}\n---\n'); },
 				readBinary: async (file: TFile) => binary.get(file.path) ?? new ArrayBuffer(0),
 				modifyBinary: async (file: TFile, contents: ArrayBuffer) => { binary.set(file.path, contents); file.stat.size = contents.byteLength; },
@@ -151,10 +153,63 @@ test('saving overrides writes new mappings and creates only missing anchored tem
 	assert.deepEqual(f.frontmatter.get(config.path)?.['template-md'], { 'keep.md': ['', '', false] });
 	assert.deepEqual(f.frontmatter.get(config.path)?.['book-tabs-template-canvas'], { 'boards/blank.canvas': ['', '', false] });
 	assert.equal(f.frontmatter.get(config.path)?.['book-tabs-template-paths-under-global-folder'], true);
-	assert.ok(f.files.get('templates/boards/blank.canvas') instanceof TFile);
-	assert.equal(new TextDecoder().decode(f.binary.get('templates/boards/blank.canvas')), '{"nodes":[],"edges":[]}\n');
-	assert.equal(new TextDecoder().decode(f.binary.get('templates/catalog.base')), 'views: []\n');
+	assert.ok(f.files.get('templates/Book A/boards/blank.canvas') instanceof TFile);
+	assert.equal(new TextDecoder().decode(f.binary.get('templates/Book A/boards/blank.canvas')), '{"nodes":[],"edges":[]}\n');
+	assert.equal(new TextDecoder().decode(f.binary.get('templates/Book A/catalog.base')), 'views: []\n');
 	assert.deepEqual(f.service.discoverFolderOverrides().map(entry => entry.folder.path), ['Book A']);
+});
+
+test('older shared overrides keep working and seed book-relative files without overwriting them', async () => {
+	const f = fixture();
+	const config = f.add(new TFile('Book A/index.md'));
+	f.frontmatter.set(config.path, {
+		'book-tabs-template-md': { 'example.md': ['', '', false] },
+		'book-tabs-template-paths-under-global-folder': true,
+	});
+	const firstNote = f.add(new TFile('Book A/first.md'));
+	assert.equal(await f.service.handleCreate(firstNote), true);
+	assert.equal(new TextDecoder().decode(f.binary.get(firstNote.path)), 'Template');
+	await f.service.writeFolderOverrides(f.book, f.service.readFolderOverrides(f.book));
+	const destination = 'templates/Book A/example.md';
+	assert.equal(new TextDecoder().decode(f.binary.get(destination)), 'Template');
+	f.binary.set(destination, new TextEncoder().encode('Book-specific').buffer);
+	await f.service.writeFolderOverrides(f.book, f.service.readFolderOverrides(f.book));
+	assert.equal(new TextDecoder().decode(f.binary.get(destination)), 'Book-specific');
+	const secondNote = f.add(new TFile('Book A/second.md'));
+	assert.equal(await f.service.handleCreate(secondNote), true);
+	assert.equal(new TextDecoder().decode(f.binary.get(secondNote.path)), 'Book-specific');
+});
+
+test('override previews match the book-relative source used by inherited rules', async () => {
+	const f = fixture();
+	assert.equal(f.service.previewTemplatePath('example.md', f.book, true), 'templates/Book A/example.md');
+	assert.equal(f.service.previewTemplatePath('example.md', f.book, false), 'example.md');
+	assert.equal(f.service.previewTemplatePath('example.md', null), 'templates/example.md');
+	assert.equal(f.service.suggestShorterOverridePath('templates/Book A/example.md', f.book), 'example.md');
+	await f.service.writeFolderOverrides(f.book, { templateMd: { 'example.md': ['', '', false] } });
+	const source = f.files.get('templates/Book A/example.md');
+	assert.ok(source instanceof TFile);
+	f.binary.set(source.path, new TextEncoder().encode('Book template').buffer);
+	const created = f.add(new TFile('Book A/sub/new.md'));
+	assert.equal(await f.service.handleCreate(created), true);
+	assert.equal(new TextDecoder().decode(f.binary.get(created.path)), 'Book template');
+});
+
+test('reserved config filenames and vault path collisions reject overrides before writing metadata', async () => {
+	const f = fixture();
+	assert.match(f.service.validateTemplatePath('index.md', 'md', null) ?? '', /Rename.*reserved/);
+	assert.match(f.service.validateTemplatePath('nested/index.md', 'md', f.book) ?? '', /Rename.*reserved/);
+	assert.match(f.service.validateTemplatePath('index.md/other.md', 'md', f.book) ?? '', /Rename.*reserved/);
+	assert.match(f.service.validateTemplatePath('example.md/other.md', 'md', f.book) ?? '', /looks like a template file/);
+	assert.match(f.service.validateTemplateFolder('templates/example.md') ?? '', /Choose a folder path/);
+	f.add(new TFolder('templates/Book A'));
+	const occupied = f.add(new TFile('templates/Book A/occupied.md'));
+	assert.match(f.service.validateTemplatePath('occupied.md/sub.md', 'md', f.book) ?? '', /already a file/);
+	const directory = f.add(new TFolder('templates/Book A/directory.md'));
+	assert.match(f.service.validateTemplatePath('directory.md', 'md', f.book) ?? '', /already a folder/);
+	await assert.rejects(f.service.writeFolderOverrides(f.book, { templateMd: { 'index.md': ['', '', false] } }), /reserved/);
+	assert.equal(f.files.get('Book A/index.md'), undefined);
+	assert.ok(occupied && directory);
 });
 
 test('exact override paths are created as written and an existing template is never overwritten', async () => {

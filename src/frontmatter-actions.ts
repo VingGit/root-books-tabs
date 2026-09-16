@@ -11,7 +11,7 @@ export class FrontmatterActions {
 	install(): void {
 		const actions = [
 			{ id: 'show-note-frontmatter', name: 'Show frontmatter for the focused note', run: () => this.showFocused() },
-			{ id: 'open-vault-frontmatter', name: 'Open vault config in a standalone pop-out', run: () => this.showRoot() },
+			{ id: 'open-vault-frontmatter', name: 'Open vault config in a standalone pop-out', run: () => this.openVaultConfig() },
 			{ id: 'hide-opened-frontmatter', name: 'Hide frontmatter opened by Root Books Tabs', run: () => this.hide() },
 		];
 		for (const action of actions) this.plugin.addCommand({ id: action.id, name: action.name, callback: () => action.run() });
@@ -29,7 +29,7 @@ export class FrontmatterActions {
 		this.decoratedMenus.add(menu);
 		menu.addSeparator();
 		menu.addItem(item => item.setTitle('Show frontmatter for the focused note').setIcon('list').onClick(() => leaf ? this.show(leaf) : this.showFocused()));
-		menu.addItem(item => item.setTitle('Open vault config in a standalone pop-out').setIcon('external-link').onClick(() => this.showRoot(leaf)));
+		menu.addItem(item => item.setTitle('Open vault config in a standalone pop-out').setIcon('external-link').onClick(() => this.openVaultConfig(leaf)));
 		menu.addItem(item => item.setTitle('Hide frontmatter opened this way').setIcon('eye-off').onClick(() => this.hide()));
 	}
 
@@ -47,7 +47,7 @@ export class FrontmatterActions {
 		if (leaf.view instanceof MarkdownView) leaf.view.editor.setCursor({ line: 0, ch: 0 });
 	}
 
-	private async showRoot(sourceLeaf?: WorkspaceLeaf): Promise<void> {
+	async openVaultConfig(sourceLeaf?: WorkspaceLeaf): Promise<void> {
 		try {
 			const file = await this.plugin.vaultConfig.ensureRoot();
 			if (!this.rootLeaf || !this.rootLeaf.view.containerEl.isConnected) {

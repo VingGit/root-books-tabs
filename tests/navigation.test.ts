@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { TFile } from 'obsidian';
+import { TFile, TFolder } from 'obsidian';
 import { BookNavigationController } from '../src/navigation';
 
 test('excluded files clicked in the explorer request a focused tab on the first click', async () => {
@@ -46,4 +46,17 @@ test('non-explorer excluded navigation keeps the configured opening mode', async
 	await internals.routeOpen(leaf, file, undefined, async () => {});
 
 	assert.equal(requestedMode, undefined);
+});
+
+test('book home uses the same folder-note route as a file-tree click', async () => {
+	const folder = new TFolder('Book');
+	const plugin = { app: { vault: { getFolderByPath: () => folder } } };
+	const controller = new BookNavigationController(plugin as never);
+	let request: { folder: TFolder; createMissing: boolean } | null = null;
+	controller.openFolderNote = async (target, createMissing) => {
+		request = { folder: target, createMissing };
+		return true;
+	};
+	assert.equal(await controller.openBookHome({ id: 'Book', name: 'Book', folderPath: 'Book' }), true);
+	assert.deepEqual(request, { folder, createMissing: true });
 });

@@ -343,6 +343,30 @@ export class BookNavigationController {
 		return this.openNewBookGroup(source, book, entryFile, undefined, this.originalOpenFile);
 	}
 
+	async openBookHome(book: BookScope): Promise<boolean> {
+		const folder = this.plugin.app.vault.getFolderByPath(book.folderPath);
+		if (!folder) return false;
+		return this.openFolderNote(folder, true);
+	}
+
+	async openFolderNote(folder: TFolder, createMissing = false): Promise<boolean> {
+		const note = await this.getFolderNote(folder, createMissing);
+		if (!note) return false;
+		const leaf = this.plugin.app.workspace.getMostRecentLeaf() ?? this.plugin.app.workspace.getLeaf(false);
+		if (this.plugin.scopeResolver.hasMultipleBooks()) this.expectFileExplorerOpen(note.path);
+		await leaf.openFile(note);
+		return true;
+	}
+
+	private async getFolderNote(folder: TFolder, createMissing: boolean): Promise<TFile | null> {
+		if (!this.plugin.scopeResolver.resolveFolder(folder)) return null;
+		const path = this.plugin.bookOrder.getConfigPath(folder);
+		const existing = this.plugin.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) return existing;
+		if (existing) throw new Error(`Could not open the folder note: ${path} is a folder.`);
+		return createMissing ? this.plugin.bookOrder.ensureConfig(folder) : null;
+	}
+
 	async openAdditionalBook(book: BookScope, forcePopout = false): Promise<boolean> {
 		const existing = this.getCanonicalBookLeaf(book);
 		if (existing) {

@@ -260,12 +260,18 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 
 	private renderTemplates(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Folder templates').setHeading();
-		new Setting(containerEl).setName('Default template folder')
-			.setDesc('Bare global template filenames are read from this vault folder. Paths that already contain folders remain exact. Default: templates.')
-			.addText(text => text.setPlaceholder(DEFAULT_SETTINGS.templateFolder).setValue(this.scopeTabs.settings.templateFolder).onChange(async value => {
-				this.scopeTabs.settings.templateFolder = value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '');
-				await this.scopeTabs.vaultConfig.set('templateFolder', this.scopeTabs.settings.templateFolder);
-			}));
+		const folderSetting = new Setting(containerEl).setName('Default template folder')
+			.setDesc('Bare global template filenames are read from this vault folder. Paths that already contain folders remain exact. Default: templates.');
+		folderSetting.addText(text => text.setPlaceholder(DEFAULT_SETTINGS.templateFolder).setValue(this.scopeTabs.settings.templateFolder).onChange(async value => {
+			const next = value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '');
+			const error = this.scopeTabs.templates.validateTemplateFolder(next);
+			text.inputEl.toggleClass('scope-tabs-invalid-template-path', error !== null);
+			text.inputEl.setAttribute('aria-invalid', String(error !== null));
+			folderSetting.setDesc(error ?? 'Bare global template filenames are read from this vault folder. Paths that already contain folders remain exact. Default: templates.');
+			if (error) return;
+			this.scopeTabs.settings.templateFolder = next;
+			await this.scopeTabs.vaultConfig.set('templateFolder', next);
+		}));
 		this.renderGlobalTemplateType(containerEl, 'Markdown', 'md', 'templateMd');
 		this.renderGlobalTemplateType(containerEl, 'Canvas', 'canvas', 'templateCanvas');
 		this.renderGlobalTemplateType(containerEl, 'Base', 'base', 'templateBase');
@@ -280,7 +286,19 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
 		const draft: TemplateRuleValues = { ...(current ?? fallback) };
 		let enabled = current !== null;
+		let pathInput: HTMLInputElement | null = null;
+		let pathSetting: Setting | null = null;
+		const validate = (): string | null => {
+			const error = enabled && draft.templatePath
+				? this.scopeTabs.templates.validateTemplatePath(draft.templatePath, type, null)
+				: null;
+			pathInput?.toggleClass('scope-tabs-invalid-template-path', error !== null);
+			pathInput?.setAttribute('aria-invalid', String(error !== null));
+			pathSetting?.setDesc(error ?? `A bare filename uses the default template folder. A path with folders is vault-relative and exact. Leave the row empty to disable .${type} templates.`);
+			return error;
+		};
 		const save = async (): Promise<void> => {
+			if (validate()) return;
 			if (enabled && draft.templatePath && !draft.templatePath.toLowerCase().endsWith(`.${type}`)) return;
 			const rule = enabled && draft.templatePath ? makeTemplateRule(draft, type) : {};
 			this.scopeTabs.settings[key] = rule;
@@ -299,9 +317,13 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			}));
 		const drawer = createTemplateDrawer(containerEl, enabled);
 		setDrawerOpen = drawer.setOpen;
-		new Setting(drawer.content).setName('Template file')
+		pathSetting = new Setting(drawer.content).setName('Template file')
 			.setDesc(`A bare filename uses the default template folder. A path with folders is vault-relative and exact. Leave the row empty to disable .${type} templates.`)
-			.addText(text => text.setPlaceholder(`example.${type}`).setValue(draft.templatePath).onChange(async value => { draft.templatePath = value; await save(); }));
+			.addText(text => {
+				pathInput = text.inputEl;
+				text.setPlaceholder(`example.${type}`).setValue(draft.templatePath).onChange(async value => { draft.templatePath = value; await save(); });
+			});
+		validate();
 		new Setting(drawer.content).setName('Filename prefix').setDesc('Applied only when the filename convention switch is on. Use {{date}} to insert the formatted date.')
 			.addText(text => text.setValue(draft.prefix).onChange(async value => { draft.prefix = value; await save(); }));
 		new Setting(drawer.content).setName('Date format').setDesc('Used by {{date}}. A time suffix resolves date-only name collisions.')
@@ -387,9 +409,6 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 				await this.scopeTabs.refreshColorConfiguration(false);
 				this.update();
 			}));
-		new Setting(containerEl).setName('Hide new book config notes')
-			.setDesc('Adds the exact new config path to .obsidianignore. Enable the ignore plugin for vault-wide hiding.')
-			.addToggle(toggle => toggle.setValue(this.scopeTabs.vaultConfig.values.hideNewBookIndex === true).onChange(value => this.scopeTabs.vaultConfig.set('hideNewBookIndex', value)));
 		new Setting(containerEl).setName('Automatic book colors').setDesc('Book frontmatter overrides automatic colors. Automatic colors stay local and survive resetting settings.')
 			.addButton(button => button.setButtonText('Add color override').onClick(() => new ColorOverridesModal(this.app, this.scopeTabs).open()));
 		this.renderFrontmatterColors(containerEl);
@@ -574,18 +593,30 @@ class FolderTemplateOverridesModal extends Modal {
 		const folder = this.app.vault.getFolderByPath(this.selectedPath);
 		if (!folder) return;
 		const existing = this.plugin.templates.readFolderOverrides(folder);
-		const effective = this.plugin.templates.resolveForFolder(folder);
+		const inherited = folder.parent ? this.plugin.templates.resolveForFolder(folder.parent)
+			: this.plugin.templates.resolveForFolder(folder);
 		const draft: FolderTemplateOverrides = { ...existing };
 		let pathsUnderGlobal = existing.templatePathsUnderGlobalFolder ?? true;
-		new Setting(this.contentEl).setName('Keep override templates in the default template folder')
-			.setDesc('On by default. Custom paths are placed under the global template folder, even when they contain subfolders. This avoids accidentally creating visible books that contain only templates. Turn it off to use each path exactly as a vault-relative path.')
-			.addToggle(toggle => toggle.setValue(pathsUnderGlobal).onChange(value => { pathsUnderGlobal = value; draft.templatePathsUnderGlobalFolder = value; }));
-		this.addTemplateOverrideType('Markdown', 'md', 'templateMd', existing, effective.templateMd, draft);
-		this.addTemplateOverrideType('Canvas', 'canvas', 'templateCanvas', existing, effective.templateCanvas, draft);
-		this.addTemplateOverrideType('Base', 'base', 'templateBase', existing, effective.templateBase, draft);
+		const previewRefreshers: (() => void)[] = [];
+		const validityChecks: (() => boolean)[] = [];
+		let saveButton: HTMLButtonElement | null = null;
+		const updateSaveState = (): void => { if (saveButton) saveButton.disabled = validityChecks.some(check => !check()); };
+		new Setting(this.contentEl).setName('Keep override templates in book-relative paths')
+			.setDesc(`On by default: example.md for ${folder.path.split('/')[0]} writes to ${this.plugin.templates.previewTemplatePath('example.md', folder, true)}. Off: example.md writes to example.md at the vault root. Off also treats paths with folders as exact vault-relative paths.`)
+			.addToggle(toggle => toggle.setValue(pathsUnderGlobal).onChange(value => {
+				pathsUnderGlobal = value;
+				draft.templatePathsUnderGlobalFolder = value;
+				previewRefreshers.forEach(refresh => refresh());
+			}));
+		this.addTemplateOverrideType('Markdown', 'md', 'templateMd', folder, existing, inherited.templateMd, draft, () => pathsUnderGlobal, previewRefreshers, validityChecks, updateSaveState);
+		this.addTemplateOverrideType('Canvas', 'canvas', 'templateCanvas', folder, existing, inherited.templateCanvas, draft, () => pathsUnderGlobal, previewRefreshers, validityChecks, updateSaveState);
+		this.addTemplateOverrideType('Base', 'base', 'templateBase', folder, existing, inherited.templateBase, draft, () => pathsUnderGlobal, previewRefreshers, validityChecks, updateSaveState);
 		new Setting(this.contentEl).setDesc('Disabled rows inherit the nearest rule. Enabled empty rows explicitly disable that file type for this folder.')
-			.addButton(button => button.setButtonText('Save overrides').setCta().onClick(async () => {
+			.addButton(button => {
+				saveButton = button.buttonEl;
+				button.setButtonText('Save overrides').setCta().onClick(async () => {
 				try {
+					if (validityChecks.some(check => !check())) return;
 					draft.templatePathsUnderGlobalFolder = pathsUnderGlobal;
 					await this.plugin.templates.writeFolderOverrides(folder, draft);
 					new Notice('Template overrides saved. Missing template files were created.');
@@ -593,7 +624,9 @@ class FolderTemplateOverridesModal extends Modal {
 				} catch (error) {
 					new Notice(error instanceof Error ? error.message : 'Could not save template overrides.');
 				}
-			}));
+				});
+			});
+		updateSaveState();
 		const discovered = this.plugin.templates.discoverFolderOverrides();
 		if (discovered.length) {
 			new Setting(this.contentEl).setName('Folders with overrides').setHeading();
@@ -608,13 +641,18 @@ class FolderTemplateOverridesModal extends Modal {
 		label: string,
 		type: TemplateFileType,
 		key: 'templateMd' | 'templateCanvas' | 'templateBase',
+		folder: TFolder,
 		existing: FolderTemplateOverrides,
 		inheritedRule: TemplateRule,
 		draft: FolderTemplateOverrides,
+		pathsUnderGlobal: () => boolean,
+		previewRefreshers: (() => void)[],
+		validityChecks: (() => boolean)[],
+		updateSaveState: () => void,
 	): void {
 		let enabled = existing[key] !== undefined;
 		const inherited = ruleValues(inheritedRule) ?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
-		const values = ruleValues(existing[key] ?? inheritedRule) ?? { ...inherited };
+		const values = ruleValues(existing[key] ?? inheritedRule) ?? { ...inherited, templatePath: '' };
 		const updateRule = (): void => {
 			draft[key] = enabled
 				? values.templatePath ? { [values.templatePath]: [values.dateFormat, values.prefix, values.applyFilenameConvention] } : {}
@@ -627,12 +665,51 @@ class FolderTemplateOverridesModal extends Modal {
 				setDrawerOpen(value);
 				retainToggleFocus(toggle.toggleEl);
 				updateRule();
+				refreshPreview();
 			}));
 		const drawer = createTemplateDrawer(this.contentEl, enabled);
 		setDrawerOpen = drawer.setOpen;
-		new Setting(drawer.content).setName('Template file').setDesc(`Inherited: ${inherited.templatePath || 'disabled'}`).addText(text => {
-			text.setPlaceholder(inherited.templatePath).setValue(values.templatePath).onChange(value => { values.templatePath = value; updateRule(); });
+		let pathInput: HTMLInputElement;
+		const pathSetting = new Setting(drawer.content).setName('Template file').setDesc(`Inherited: ${inherited.templatePath || 'disabled'}`);
+		pathSetting.addText(text => {
+			pathInput = text.inputEl;
+			text.setPlaceholder(inherited.templatePath).setValue(values.templatePath).onChange(value => { values.templatePath = value; updateRule(); refreshPreview(); });
 		});
+		const preview = drawer.content.createDiv({ cls: 'scope-tabs-template-path-preview setting-item-description' });
+		const fix = preview.createEl('button', { cls: 'scope-tabs-template-path-fix', text: 'Use relative filename', attr: { type: 'button' } });
+		fix.addEventListener('click', () => {
+			const suggestion = this.plugin.templates.suggestShorterOverridePath(values.templatePath, folder);
+			if (!suggestion) return;
+			values.templatePath = suggestion;
+			pathInput.value = suggestion;
+			updateRule();
+			refreshPreview();
+		});
+		const isValid = (): boolean => !enabled || !values.templatePath
+			|| this.plugin.templates.validateTemplatePath(values.templatePath, type, folder, pathsUnderGlobal()) === null;
+		const refreshPreview = (): void => {
+			const error = enabled && values.templatePath
+				? this.plugin.templates.validateTemplatePath(values.templatePath, type, folder, pathsUnderGlobal())
+				: null;
+			pathInput.toggleClass('scope-tabs-invalid-template-path', error !== null);
+			pathInput.setAttribute('aria-invalid', String(error !== null));
+			pathSetting.setDesc(error ?? `Inherited: ${inherited.templatePath || 'disabled'}`);
+			const destination = enabled && values.templatePath
+				? this.plugin.templates.previewTemplatePath(values.templatePath, folder, pathsUnderGlobal())
+				: '';
+			preview.setText(destination ? `${error ? 'Blocked destination' : 'Save will write'}: ${destination}` : 'No override template file will be written.');
+			const suggestion = enabled && pathsUnderGlobal()
+				? this.plugin.templates.suggestShorterOverridePath(values.templatePath, folder)
+				: null;
+			if (suggestion) {
+				preview.appendText(' This path already includes its template folder and book name.');
+				preview.appendChild(fix);
+			}
+			updateSaveState();
+		};
+		previewRefreshers.push(refreshPreview);
+		validityChecks.push(isValid);
+		refreshPreview();
 		new Setting(drawer.content).setName('Filename prefix').setDesc(`Inherited: ${inherited.prefix || 'empty'}`).addText(text => {
 			text.setPlaceholder(inherited.prefix).setValue(values.prefix).onChange(value => { values.prefix = value; updateRule(); });
 		});
@@ -646,19 +723,40 @@ class FolderTemplateOverridesModal extends Modal {
 }
 
 class ColorOverridesModal extends Modal {
+	private selectedBookId = '';
 	constructor(app: App, private readonly plugin: ScopeTabsPlugin) { super(app); }
 	onOpen(): void { this.render(); }
 	private render(): void {
 		this.contentEl.empty(); this.titleEl.setText('Book color overrides');
 		const books = this.plugin.scopeResolver.listBooks();
-		let selected = books[0]?.id ?? '', color = '#5588cc', foreground = 'white';
+		let selected = books.some(book => book.id === this.selectedBookId) ? this.selectedBookId : books[0]?.id ?? '';
+		this.selectedBookId = selected;
+		const selectedBook = books.find(book => book.id === selected);
+		let color = selectedBook ? this.plugin.colors.getColor(selectedBook) : '#5588cc';
+		let foreground = selectedBook ? this.plugin.colors.getTabTextColor(selectedBook) : 'white';
+		let updateColorPicker = (_value: string): void => {};
+		let updateForegroundInput = (_value: string): void => {};
 		new Setting(this.contentEl).setName('Book').addDropdown(dropdown => {
 			for (const book of books) dropdown.addOption(book.id, book.name);
-			dropdown.setValue(selected).onChange(value => { selected = value; });
+			dropdown.setValue(selected).onChange(value => {
+				selected = value; this.selectedBookId = value;
+				const book = books.find(candidate => candidate.id === value);
+				if (!book) return;
+				color = this.plugin.colors.getColor(book);
+				foreground = this.plugin.colors.getTabTextColor(book);
+				updateColorPicker(color);
+				updateForegroundInput(foreground);
+			});
 		});
-		new Setting(this.contentEl).setName('Color').addColorPicker(picker => picker.setValue(color).onChange(value => { color = value; }));
+		new Setting(this.contentEl).setName('Color').addColorPicker(picker => {
+			updateColorPicker = value => { picker.setValue(value); };
+			picker.setValue(color).onChange(value => { color = value; });
+		});
 		new Setting(this.contentEl).setName('Background tab text').setDesc('White, black, or a CSS hex color.')
-			.addText(text => text.setValue(foreground).onChange(value => { foreground = value; }));
+			.addText(text => {
+				updateForegroundInput = value => { text.setValue(value); };
+				text.setValue(foreground).onChange(value => { foreground = value; });
+			});
 		new Setting(this.contentEl).addButton(button => button.setButtonText('Save override').setCta().onClick(async () => {
 			const book = books.find(book => book.id === selected); if (!book) return;
 			try { await this.plugin.colors.setOverride(book, color, foreground); window.setTimeout(() => this.render(), 150); }
@@ -704,8 +802,7 @@ export class CreateBookModal extends Modal {
 					return;
 				}
 				if (this.plugin.vaultConfig.values.createBookIndex !== false) {
-					const file = await this.plugin.bookOrder.ensureConfig(folder);
-					if (this.plugin.vaultConfig.values.hideNewBookIndex === true) await this.plugin.bookIgnore.add(file);
+					await this.plugin.bookOrder.ensureConfig(folder);
 				}
 				this.plugin.settings.selectedBookId = folder.path;
 				await this.plugin.saveSettings();

@@ -19,7 +19,6 @@ const HELP: Record<string, string> = {
 	bookNoteOpenMode: 'same-tab, background-tab, or focused-tab. In a book config, false inherits the vault.',
 	openBooksInExternalWindows: 'True opens new book groups in pop-outs; false uses the main window.',
 	createBookIndex: 'True creates a config note when a first-level book folder is created.',
-	hideNewBookIndex: 'True adds new book config notes to .obsidianignore. Requires the Ignore plugin for vault-wide hiding.',
 	configFileBaseName: 'Per-book config filename without .md. Use settings to safely rename existing config notes.',
 	colorFrontmatterProperty: 'Book color property name. Use settings to migrate existing color fields.',
 	tabTextFrontmatterProperty: 'Background-style tab foreground property name; default tab-text-bg.',
@@ -44,11 +43,11 @@ const HELP: Record<string, string> = {
 	orderingDirection: 'descending shows newest date-sorted items first; ascending reverses the ordinary item order.',
 	configNotePosition: 'top or bottom pins every folder config note outside fileOrder.',
 	forceUpdateLinks: 'True keeps Obsidian automatic internal-link updates enabled.',
-	'template-folder': 'Default vault folder for bare global template filenames and, by default, every folder override template.',
+	'template-folder': 'Default vault folder for bare global template filenames and book-relative override templates.',
 	'template-md': 'Markdown template mapping: template.md: [date format, prefix, apply filename convention]. Empty disables Markdown templating.',
 	'template-canvas': 'Canvas template mapping: template.canvas: [date format, prefix, apply filename convention]. Empty disables Canvas templating.',
 	'template-base': 'Base template mapping: template.base: [date format, prefix, apply filename convention]. Empty disables Base templating.',
-	'template-paths-under-global-folder': 'True resolves this folder config\'s template paths under the vault default template folder; false uses exact vault-relative paths.',
+	'template-paths-under-global-folder': 'True resolves this folder config\'s template paths under the default template folder and first-level book name; false uses exact vault-relative paths.',
 };
 
 const LEGACY_HELP: Record<string, readonly string[]> = {

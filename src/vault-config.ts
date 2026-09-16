@@ -5,8 +5,8 @@ import { DEFAULT_SETTINGS, migrateSettings } from './settings-model';
 import type { ScopeTabsSettings } from './types';
 
 const LOCAL_KEYS = new Set(['manualColors', 'manualTabTextColors', 'colorMode', 'selectedBookId', 'defaultStartupBookId', 'defaultStartupNotePath', 'bookNoteOpenModeOverrides', 'tabCustomCss', 'indexMoveDecision']);
-const ROOT_ONLY_KEYS = ['isFreshClone', 'freshCloneOpeningPath', 'createBookIndex', 'hideNewBookIndex'] as const;
-const OBSOLETE_ROOT_KEYS = ['showGridBoundaries', 'gridBoundaryThickness'] as const;
+const ROOT_ONLY_KEYS = ['isFreshClone', 'freshCloneOpeningPath', 'createBookIndex'] as const;
+const OBSOLETE_ROOT_KEYS = ['showGridBoundaries', 'gridBoundaryThickness', 'hideNewBookIndex'] as const;
 const LEGACY_TEMPLATE_ROOT_KEYS = ['template-file-prefix', 'template-file-date', 'template-file-path', 'template-file-applied-To', 'template-file-applied-to'] as const;
 const LEGACY_TEMPLATE_SETTING_ALIASES: Record<string, readonly string[]> = {
 	templateFilePrefix: ['template-file-prefix'],
@@ -56,7 +56,6 @@ export class VaultConfigService {
 				tabInsertDirection: settings.tabInsertDirection,
 				openBooksInExternalWindows: settings.openBooksInExternalWindows,
 				createBookIndex: true,
-				hideNewBookIndex: false,
 			};
 			for (const [key, value] of Object.entries(settings)) {
 				if (!LOCAL_KEYS.has(key)) ensurePluginFrontmatter(fm, storageKey(key), value, context.ownedPlainKeys);

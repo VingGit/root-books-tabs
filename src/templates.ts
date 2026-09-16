@@ -99,10 +99,23 @@ export class FolderTemplateService {
 	}
 
 	async writeFolderOverrides(folder: TFolder, overrides: FolderTemplateOverrides): Promise<TFile> {
+		const templateFiles: { path: string; type: TemplateFileType; legacyPath?: string }[] = [];
 		for (const field of TEMPLATE_FIELDS) {
 			const rule = overrides[field.setting];
-			if (rule !== undefined) validateRule(rule, field.type);
+			if (rule === undefined) continue;
+			validateRule(rule, field.type);
+			const values = ruleValues(rule);
+			if (!values) continue;
+			const error = this.validateTemplatePath(values.templatePath, field.type, folder, overrides.templatePathsUnderGlobalFolder ?? true);
+			if (error) throw new Error(error);
+			const bookRelative = overrides.templatePathsUnderGlobalFolder ?? true;
+			templateFiles.push({
+				path: this.previewTemplatePath(values.templatePath, folder, bookRelative),
+				type: field.type,
+				legacyPath: bookRelative ? this.legacyOverrideTemplatePath(values.templatePath) : undefined,
+			});
 		}
+		for (const template of templateFiles) await this.ensureTemplateFile(template.path, template.type, template.legacyPath);
 		const file = await this.plugin.bookOrder.ensureConfig(folder);
 		await updateConfigFrontmatter(this.plugin.app, file, (frontmatter, context) => {
 			for (const field of TEMPLATE_FIELDS) {
@@ -115,14 +128,53 @@ export class FolderTemplateService {
 			for (const legacy of LEGACY_FIELDS) removeManagedBoolean(frontmatter, legacy, context.ownedPlainKeys);
 			this.writtenFrontmatter.set(file.path, { ...frontmatter });
 		});
-		for (const field of TEMPLATE_FIELDS) {
-			const rule = overrides[field.setting];
-			const values = rule ? ruleValues(rule) : null;
-			if (!values) continue;
-			const path = this.resolveTemplatePath(values.templatePath, overrides.templatePathsUnderGlobalFolder ?? true);
-			await this.ensureTemplateFile(path, field.type);
-		}
 		return file;
+	}
+
+	previewTemplatePath(path: string, folder: TFolder | null, pathsUnderGlobalFolder = true): string {
+		return this.resolveTemplatePath(path, folder ? pathsUnderGlobalFolder : null, folder?.path.split('/')[0]);
+	}
+
+	validateTemplatePath(path: string, type: TemplateFileType, folder: TFolder | null, pathsUnderGlobalFolder = true): string | null {
+		const clean = sanitizeVaultPath(path);
+		if (!clean || !clean.toLowerCase().endsWith(`.${type}`)) return `Enter a valid .${type} template path without . or .. segments.`;
+		if (clean.split('/').some(segment => /[\\:*?"<>|]/.test(segment) || !segment)) return 'Rename the template to remove invalid filename characters.';
+		const configName = `${this.plugin.settings.configFileBaseName}.md`;
+		if (clean.split('/').some(segment => segment.toLowerCase() === configName.toLowerCase())) return `Rename the template file or folder: ${configName} is reserved for book config notes.`;
+		const resolved = this.previewTemplatePath(clean, folder, pathsUnderGlobalFolder);
+		const segments = resolved.split('/');
+		if (segments.some(segment => segment.toLowerCase() === configName.toLowerCase())) return `Rename the template file or folder: ${configName} is reserved for book config notes.`;
+		for (let index = 1; index <= segments.length; index++) {
+			const candidate = segments.slice(0, index).join('/');
+			const existing = this.plugin.app.vault.getAbstractFileByPath(candidate);
+			if (index < segments.length && existing instanceof TFile) return `Rename the template or its parent path: ${candidate} is already a file.`;
+			if (index < segments.length && /\.(?:md|canvas|base)$/i.test(segments[index - 1] ?? '')) return `Rename the parent folder: ${candidate} looks like a template file.`;
+			if (index === segments.length && existing instanceof TFolder) return `Rename the template: ${candidate} is already a folder.`;
+		}
+		return null;
+	}
+
+	validateTemplateFolder(path: string): string | null {
+		if (!path.trim()) return null;
+		const clean = sanitizeVaultPath(path);
+		if (!clean) return 'Choose a vault-relative template folder without . or .. segments.';
+		const segments = clean.split('/');
+		if (segments.some(segment => /[\\:*?"<>|]/.test(segment) || !segment)) return 'Rename the template folder to remove invalid filename characters.';
+		if (segments.some(segment => segment.toLowerCase() === `${this.plugin.settings.configFileBaseName}.md`.toLowerCase()
+			|| /\.(?:md|canvas|base)$/i.test(segment))) return 'Choose a folder path, not a Markdown, Canvas, Base, or book config-note filename.';
+		for (let index = 1; index <= segments.length; index++) {
+			const candidate = segments.slice(0, index).join('/');
+			if (this.plugin.app.vault.getAbstractFileByPath(candidate) instanceof TFile) return `Choose another template folder: ${candidate} is already a file.`;
+		}
+		return null;
+	}
+
+	suggestShorterOverridePath(path: string, folder: TFolder): string | null {
+		const clean = sanitizeVaultPath(path);
+		const folderName = folder.path.split('/')[0];
+		const base = this.globalTemplateFolder();
+		const prefix = base && folderName ? `${base}/${folderName}/` : '';
+		return prefix && clean.toLowerCase().startsWith(prefix.toLowerCase()) ? clean.slice(prefix.length) : null;
 	}
 
 	refresh(file: TFile): void { this.writtenFrontmatter.delete(file.path); }
@@ -134,7 +186,13 @@ export class FolderTemplateService {
 		const resolved = this.resolveRule(file.parent, field);
 		const values = ruleValues(resolved.rule);
 		if (!values) return false;
-		const templatePath = this.resolveTemplatePath(values.templatePath, resolved.folderOverrideMode);
+		const ruleFolder = resolved.folderOverrideMode === null ? null : file.parent;
+		if (this.validateTemplatePath(values.templatePath, field.type, ruleFolder, resolved.folderOverrideMode ?? true)) return false;
+		let templatePath = this.resolveTemplatePath(values.templatePath, resolved.folderOverrideMode, file.parent.path.split('/')[0]);
+		if (resolved.folderOverrideMode === true && !this.plugin.app.vault.getFileByPath(templatePath)) {
+			const legacyPath = this.legacyOverrideTemplatePath(values.templatePath);
+			if (this.plugin.app.vault.getFileByPath(legacyPath)) templatePath = legacyPath;
+		}
 		if (!templatePath || file.path === templatePath) return false;
 
 		let changed = false;
@@ -173,24 +231,38 @@ export class FolderTemplateService {
 		return sanitizeVaultPath(readManagedString(values, 'template-folder') ?? this.plugin.settings.templateFolder);
 	}
 
-	private resolveTemplatePath(path: string, folderOverrideMode: boolean | null): string {
+	private resolveTemplatePath(path: string, folderOverrideMode: boolean | null, bookId?: string): string {
 		const clean = sanitizeVaultPath(path);
 		if (!clean) return '';
 		const folder = this.globalTemplateFolder();
-		const shouldAnchor = folderOverrideMode === true || (folderOverrideMode === null && !clean.includes('/'));
-		return normalizePath(shouldAnchor && folder ? `${folder}/${clean}` : clean);
+		if (folderOverrideMode === true && folder && bookId) return normalizePath(`${folder}/${bookId}/${clean}`);
+		return normalizePath(folderOverrideMode === null && !clean.includes('/') && folder ? `${folder}/${clean}` : clean);
 	}
 
-	private async ensureTemplateFile(path: string, type: TemplateFileType): Promise<void> {
-		if (!path || this.plugin.app.vault.getAbstractFileByPath(path)) return;
+	private legacyOverrideTemplatePath(path: string): string {
+		const clean = sanitizeVaultPath(path);
+		const folder = this.globalTemplateFolder();
+		return clean ? normalizePath(folder ? `${folder}/${clean}` : clean) : '';
+	}
+
+	private async ensureTemplateFile(path: string, type: TemplateFileType, legacyPath?: string): Promise<void> {
+		if (!path) return;
+		const existing = this.plugin.app.vault.getAbstractFileByPath(path);
+		if (existing instanceof TFile) return;
+		if (existing) throw new Error(`Rename the template: ${path} is already a folder.`);
 		const segments = path.split('/');
 		segments.pop();
 		let folder = '';
 		for (const segment of segments) {
 			folder = folder ? `${folder}/${segment}` : segment;
-			if (!this.plugin.app.vault.getAbstractFileByPath(folder)) await this.plugin.app.vault.createFolder(folder);
+			const parent = this.plugin.app.vault.getAbstractFileByPath(folder);
+			if (parent instanceof TFile) throw new Error(`Rename the template or its parent path: ${folder} is already a file.`);
+			if (!parent) await this.plugin.app.vault.createFolder(folder);
 		}
-		const contents = type === 'canvas' ? '{"nodes":[],"edges":[]}\n' : type === 'base' ? 'views: []\n' : '';
+		const legacy = legacyPath && legacyPath !== path ? this.plugin.app.vault.getFileByPath(legacyPath) : null;
+		const contents = legacy
+			? await this.plugin.app.vault.read(legacy)
+			: type === 'canvas' ? '{"nodes":[],"edges":[]}\n' : type === 'base' ? 'views: []\n' : '';
 		await this.plugin.app.vault.create(path, contents);
 	}
 

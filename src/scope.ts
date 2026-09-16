@@ -29,6 +29,16 @@ export class FirstLevelFolderScopeResolver {
 		if (!file) return null;
 		const [first] = file.path.split('/');
 		if (!first || first === file.path) return null;
+		return this.resolveBookRoot(first);
+	}
+
+	resolveFolder(folder: TFolder | null | undefined): BookScope | null {
+		if (!folder || folder.isRoot()) return null;
+		const [first] = folder.path.split('/');
+		return first ? this.resolveBookRoot(first) : null;
+	}
+
+	private resolveBookRoot(first: string): BookScope | null {
 		const rootEntry = this.vault.getAbstractFileByPath(first);
 		if (!(rootEntry instanceof TFolder) || this.isExcluded(rootEntry)) return null;
 		return { id: rootEntry.path, name: rootEntry.name, folderPath: rootEntry.path };
