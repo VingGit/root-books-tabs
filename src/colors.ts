@@ -224,6 +224,6 @@ export function validateColorKeys(colorKey: string, textKey: string): void {
 	colorKey = colorKey.replace(/^book-tabs-/, '');
 	textKey = textKey.replace(/^book-tabs-/, '');
 	if (colorKey === textKey) throw new Error('Book color and tab text must use different frontmatter properties.');
-	const reserved = new Set(['fileOrder', 'creation-date', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'tabInsertDirection', 'bookNoteOpenMode']);
+	const reserved = new Set(['fileOrder', 'creation-date', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'forcedOrderingDirection', 'tabInsertDirection', 'bookNoteOpenMode', 'aliases']);
 	if (reserved.has(colorKey) || reserved.has(textKey)) throw new Error('Color properties cannot use ordering or navigation property names.');
 }

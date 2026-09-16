@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { BookOrderService, dateStamp, reconcileFileOrder } from '../src/book-order';
 import { TAbstractFile, TFile, TFolder } from './obsidian-mock';
-import { addConfigComments, removeObsoleteGeneratedHelp, restoreConfigComments } from '../src/config-frontmatter';
+import { addConfigComments, removeObsoleteGeneratedHelp, restoreConfigComments, updateConfigFrontmatter } from '../src/config-frontmatter';
 
 function fixture(direction: 'ascending' | 'descending' = 'descending') {
 	const files = new Map<string, TAbstractFile>();
@@ -21,9 +21,10 @@ function fixture(direction: 'ascending' | 'descending' = 'descending') {
 	const plugin = {
 		settings: {
 			configFileBaseName: 'index', colorFrontmatterProperty: 'color', tabTextFrontmatterProperty: 'tab-text-bg',
-			orderingDirection: direction, configNotePosition: 'top',
+			orderingDirection: direction, articleNavigatorNextProperty: 'NextArticle', articleNavigatorPreviousProperty: 'PreviousArticle',
 		},
 		vaultConfig: { set: (key: string, value: unknown) => { (plugin.settings as Record<string, unknown>)[key] = value; return Promise.resolve(); } },
+		templates: { dateFormatForFolder: () => 'DD.MM.YYYY' },
 		scopeResolver: {
 			listBooks: () => [{ id: book.path, name: book.name, folderPath: book.path }, { id: 'Book B', name: 'Book B', folderPath: 'Book B' }],
 			resolveFile: (file: TAbstractFile | null) => file?.path.startsWith('Book A/') ? { id: 'Book A' } : file?.path.startsWith('Book B/') ? { id: 'Book B' } : null,
@@ -39,7 +40,13 @@ function fixture(direction: 'ascending' | 'descending' = 'descending') {
 				process: (file: TFile, change: (text: string) => string) => { writes.content++; bodies.set(file.path, change(bodies.get(file.path) ?? '')); return Promise.resolve(); },
 				create: (path: string, content = '') => { if (files.has(path)) throw Error('exists'); return Promise.resolve(add(new TFile(path), content)); },
 			},
-			metadataCache: { getFileCache: (file: TFile) => ({ frontmatter: fm.get(file.path) }) },
+			metadataCache: {
+				getFileCache: (file: TFile) => ({ frontmatter: fm.get(file.path) }),
+				getFirstLinkpathDest: (linkpath: string, sourcePath: string) => {
+					const path = linkpath.endsWith('.md') ? linkpath : `${linkpath}.md`;
+					return files.get(path) ?? files.get(`${sourcePath.split('/').slice(0, -1).join('/')}/${path}`) ?? null;
+				},
+			},
 			fileManager: {
 				processFrontMatter: (file: TFile, fn: (values: Record<string, unknown>) => void) => {
 					writes.frontmatter++;
@@ -56,8 +63,53 @@ function fixture(direction: 'ascending' | 'descending' = 'descending') {
 		},
 	};
 	const service = new BookOrderService(plugin as never);
-	return { add, files, fm, bodies, writes, book, service, scope: { id: book.path, name: book.name, folderPath: book.path } };
+	return { add, files, fm, bodies, writes, book, service, plugin, scope: { id: book.path, name: book.name, folderPath: book.path } };
 }
+
+test('frontmatter updates preserve another writer’s values when the metadata cache lags', async () => {
+	const f = fixture();
+	const file = f.add(new TFile('Book A/index.md'));
+	f.fm.set(file.path, { title: 'Book A', newerProperty: 'preserve' });
+	f.plugin.app.metadataCache.getFileCache = () => ({ frontmatter: { title: 'old' } });
+	await updateConfigFrontmatter(f.plugin.app as never, file as never, values => { values.title = 'Book A'; });
+	assert.equal(f.fm.get(file.path)?.title, 'Book A');
+	assert.equal(f.fm.get(file.path)?.newerProperty, 'preserve');
+});
+
+test('folder config aliases follow their parent and repair edits without replacing the body', async () => {
+	const f = fixture();
+	const config = f.add(new TFile('Book A/index.md'), 'Keep this body');
+	f.fm.set(config.path, { aliases: ['edited'], unrelated: 'keep' });
+	assert.equal(f.service.hasExpectedAlias(config as never), false);
+	await f.service.syncConfig(config as never);
+	assert.deepEqual(f.fm.get(config.path)?.aliases, ['Book A']);
+	assert.equal(f.fm.get(config.path)?.unrelated, 'keep');
+	assert.ok(f.bodies.get(config.path)?.includes('Keep this body'));
+	assert.equal(f.service.hasExpectedAlias(config as never), true);
+});
+
+test('root config never receives a folder alias or folder order fields', async () => {
+	const f = fixture();
+	const rootConfig = f.add(new TFile('index.md'));
+	f.fm.set(rootConfig.path, { aliases: ['Test vault'], rootSetting: true });
+	assert.equal(f.service.hasExpectedAlias(rootConfig as never), true);
+	await f.service.syncConfig(rootConfig as never);
+	assert.deepEqual(f.fm.get(rootConfig.path), { aliases: ['Test vault'], rootSetting: true });
+	assert.equal(f.writes.frontmatter, 0);
+});
+
+test('property ordering follows either direction links and reverses a stable chain', () => {
+	const f = fixture('ascending');
+	const first = f.add(new TFile('Book A/z.md'));
+	const second = f.add(new TFile('Book A/a.md'));
+	const third = f.add(new TFile('Book A/m.md'));
+	f.fm.set(first.path, { NextArticle: '[[a]]' });
+	f.fm.set(third.path, { PreviousArticle: '[[a]]' });
+	const sorted = (): string[] => [third, second, first].sort((a, b) => f.service.compare(a as never, b as never, 'properties')).map(file => file.name);
+	assert.deepEqual(sorted(), ['z.md', 'a.md', 'm.md']);
+	f.service.setDirection('descending');
+	assert.deepEqual(sorted(), ['m.md', 'a.md', 'z.md']);
+});
 
 test('preparation creates portable immediate-child arrays for every visible file type', async () => {
 	const f = fixture();
@@ -155,7 +207,7 @@ test('directory config notes stay fixed and cannot enter manual ordering', async
 	assert.ok(f.files.has('Book A/sub/index.md'));
 });
 
-test('config note position is fixed while direction reverses ordinary entries', async () => {
+test('hidden config notes stay fixed first while direction reverses ordinary entries', async () => {
 	const f = fixture();
 	const index = f.add(new TFile('Book A/index.md'));
 	const a = f.add(new TFile('Book A/a.md'));
@@ -164,8 +216,7 @@ test('config note position is fixed while direction reverses ordinary entries', 
 	assert.ok(f.service.compare(a as never, z as never, 'alphabetical') > 0);
 	await f.service.setDirection('ascending');
 	assert.ok(f.service.compare(a as never, z as never, 'alphabetical') < 0);
-	(f.service as unknown as { plugin: { settings: { configNotePosition: string } } }).plugin.settings.configNotePosition = 'bottom';
-	assert.ok(f.service.compare(index as never, z as never, 'alphabetical') > 0);
+	assert.ok(f.service.compare(index as never, z as never, 'alphabetical') < 0);
 });
 
 test('alphabetical is the default, folder overrides inherit, and type changes leave manual arrays intact', async () => {
@@ -178,14 +229,38 @@ test('alphabetical is the default, folder overrides inherit, and type changes le
 	assert.deepEqual(f.fm.get('Book A/index.md')?.fileOrder, before);
 });
 
-test('creation-date ordering uses generated Markdown timestamps and binary file stats', async () => {
-	const f = fixture();
-	const note = f.add(new TFile('Book A/note.md'), 'Original body');
-	const older = f.add(new TFile('Book A/older.png')), newer = f.add(new TFile('Book A/newer.png'));
-	older.stat.ctime = 1; newer.stat.ctime = 2;
-	await f.service.prepare(f.scope);
-	assert.equal(f.fm.get(note.path)?.['creation-date'], dateStamp(note.stat.ctime));
-	assert.ok(f.service.compare(older as never, newer as never, 'creation-date') > 0);
+test('creation-date ordering prefers filename dates, then frontmatter, then names', async () => {
+	const f = fixture('ascending');
+	const filenameOlder = f.add(new TFile('Book A/z-01.09.2026-note.md'));
+	const filenameNewer = f.add(new TFile('Book A/a-02.09.2026-note.md'));
+	f.fm.set(filenameOlder.path, { 'creation-date': '26-12-31 00:00:00.000' });
+	f.fm.set(filenameNewer.path, { 'creation-date': '26-01-01 00:00:00.000' });
+	assert.ok(f.service.compare(filenameOlder as never, filenameNewer as never, 'creation-date') < 0);
+
+	const frontmatterOlder = f.add(new TFile('Book A/z-undated.md'));
+	const frontmatterNewer = f.add(new TFile('Book A/a-undated.md'));
+	f.fm.set(frontmatterOlder.path, { 'creation-date': '26-09-03 00:00:00.000' });
+	f.fm.set(frontmatterNewer.path, { 'creation-date': '26-09-04 00:00:00.000' });
+	assert.ok(f.service.compare(frontmatterOlder as never, frontmatterNewer as never, 'creation-date') < 0);
+
+	const alphaFirst = f.add(new TFile('Book A/alpha.md'));
+	const alphaLast = f.add(new TFile('Book A/zulu.md'));
+	assert.ok(f.service.compare(alphaFirst as never, alphaLast as never, 'creation-date') < 0);
+});
+
+test('forced ordering direction inherits through folders and overrides the vault direction', () => {
+	const f = fixture('descending');
+	const sub = f.add(new TFolder('Book A/sub'));
+	const config = f.add(new TFile('Book A/sub/index.md'));
+	const a = f.add(new TFile('Book A/sub/a.md'));
+	const z = f.add(new TFile('Book A/sub/z.md'));
+	f.fm.set(config.path, { forcedOrderingDirection: 'ascending' });
+	assert.equal(f.service.getDirection(sub as never), 'ascending');
+	assert.equal(f.service.getDirectionOverride(sub as never), 'ascending');
+	assert.ok(f.service.compare(a as never, z as never, 'alphabetical') < 0);
+	f.fm.set(config.path, { forcedOrderingDirection: false });
+	assert.equal(f.service.getDirection(sub as never), 'descending');
+	assert.equal(f.service.getDirectionOverride(sub as never), null);
 });
 
 test('usage comments describe manual arrays without Markdown comments', () => {

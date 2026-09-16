@@ -11,6 +11,8 @@ import { NewNoteLocationController } from './new-note';
 import { IndexMoveController } from './index-move';
 import { LinkMaintenanceController } from './link-maintenance';
 import { FolderTemplateService } from './templates';
+import { ConfigNoteTitleService } from './config-note-titles';
+import { ArticleNavigatorIntegration } from './article-navigator';
 import { FirstLevelFolderScopeResolver } from './scope';
 import { migrateRuntimeState, migrateSettings } from './settings-model';
 import { ScopeTabsSettingTab } from './settings';
@@ -31,6 +33,8 @@ export default class ScopeTabsPlugin extends Plugin {
 	readonly indexMoves = new IndexMoveController(this);
 	readonly linkMaintenance = new LinkMaintenanceController(this);
 	readonly templates = new FolderTemplateService(this);
+	readonly configNoteTitles = new ConfigNoteTitleService(this);
+	readonly articleNavigator = new ArticleNavigatorIntegration(this.app);
 	private unloading = false;
 	private settingTab: ScopeTabsSettingTab | null = null;
 	private saveQueue: Promise<void> = Promise.resolve();
@@ -38,6 +42,7 @@ export default class ScopeTabsPlugin extends Plugin {
 	private configurationMigrated = false;
 	private portableConfigurationReady = false;
 	private portableConfigurationTask: Promise<void> | null = null;
+	private suggestedPluginSyncTask: Promise<void> | null = null;
 
 	async onload(): Promise<void> {
 		this.unloading = false;
@@ -112,6 +117,7 @@ export default class ScopeTabsPlugin extends Plugin {
 		if (this.unloading) return;
 		await this.bookIgnore.load();
 		this.registerInterval(window.setInterval(() => { void this.bookIgnore.load().then(changed => { if (changed) this.decorations.refresh(); }).catch(console.error); }, 3000));
+		this.registerInterval(window.setInterval(() => { void this.syncSuggestedPluginKeys().catch(console.error); }, 3000));
 		try {
 			if (this.app.vault.getFileByPath('index.md')) await this.vaultConfig.load();
 		} catch (error) { console.error(error); new Notice('Could not read portable book settings. Existing navigation will remain available.'); }
@@ -167,23 +173,38 @@ export default class ScopeTabsPlugin extends Plugin {
 		this.registerEvent(this.app.vault.on('create', (file) => {
 			void (async () => {
 				if (file instanceof TFile && this.scopeResolver.hasMultipleBooks() && this.scopeResolver.resolveFile(file)) await this.templates.handleCreate(file);
-				if (file instanceof TFolder && file.parent?.isRoot() && this.scopeResolver.listBooks().some(book => book.id === file.path) && this.vaultConfig.values.createBookIndex !== false) {
-					await this.bookOrder.ensureConfig(file);
+				if (file instanceof TFolder && file.parent?.isRoot() && this.scopeResolver.hasMultipleBooks() && this.scopeResolver.listBooks().some(book => book.id === file.path)) {
+					const config = await this.bookOrder.ensureConfig(file);
+					if (this.settings.indexTitleSync) await this.configNoteTitles.syncFile(config, this.settings.indexTitleProperty);
 				}
-				await this.bookOrder.syncStructure(file);
+				if (this.scopeResolver.hasMultipleBooks()) await this.bookOrder.syncStructure(file);
 				await this.handleVaultStructureChange();
 			})().catch(console.error);
 		}));
 		this.registerEvent(this.app.vault.on('delete', (file) => {
-			void this.bookOrder.syncDeleted(file.path).then(() => this.handleVaultStructureChange()).catch(console.error);
+			void (this.scopeResolver.hasMultipleBooks() ? this.bookOrder.syncDeleted(file.path) : Promise.resolve()).then(() => this.handleVaultStructureChange()).catch(console.error);
 		}));
 		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
-			void this.bookOrder.syncStructure(file, oldPath).then(() => this.handleVaultStructureChange()).catch(console.error);
+			void (this.scopeResolver.hasMultipleBooks() ? this.bookOrder.syncStructure(file, oldPath) : Promise.resolve()).then(() => this.handleVaultStructureChange()).catch(console.error);
 		}));
 		this.registerEvent(this.app.metadataCache.on('changed', (file) => {
+			if (this.scopeResolver.hasMultipleBooks() && file.path === 'index.md') {
+				const frontmatter: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter;
+				const aliases = isRecord(frontmatter) ? frontmatter.aliases : undefined;
+				if (!Array.isArray(aliases) || aliases.length !== 1 || aliases[0] !== this.app.vault.getName()) {
+					new Notice('The vault config alias follows the vault name. Rename the vault instead.');
+					void this.vaultConfig.ensureRoot().catch(console.error);
+				}
+			} else if (this.scopeResolver.hasMultipleBooks() && !this.bookOrder.hasExpectedAlias(file)) {
+				new Notice('Folder-note aliases follow their folder names. Rename the folder instead.');
+			}
 			this.bookOrder.refresh(file);
 			this.templates.refresh(file);
-			void this.bookOrder.syncConfig(file).catch(console.error);
+			if (this.scopeResolver.hasMultipleBooks()) void this.bookOrder.syncConfig(file).catch(console.error);
+			if (this.scopeResolver.hasMultipleBooks()) void this.bookOrder.syncCreationDate(file).catch(console.error);
+			if (this.scopeResolver.hasMultipleBooks() && this.settings.indexTitleSync && this.configNoteTitles.isManagedConfigNote(file)) {
+				void this.configNoteTitles.syncFile(file, this.settings.indexTitleProperty).catch(console.error);
+			}
 			if (file.path === 'index.md') {
 				void this.vaultConfig.load()
 					.then(() => this.handleScopeConfigurationChange())
@@ -201,7 +222,11 @@ export default class ScopeTabsPlugin extends Plugin {
 		if (startupResolved && this.vaultConfig.values.isFreshClone === true) await this.vaultConfig.set('isFreshClone', false);
 
 		try {
-			await this.bookOrder.refreshCreationDates();
+			if (this.scopeResolver.hasMultipleBooks()) {
+				await this.bookOrder.refreshCreationDates();
+				await this.syncSuggestedPluginKeys();
+				if (this.settings.indexTitleSync) await this.configNoteTitles.reconcileAll(this.settings.indexTitleProperty);
+			}
 			await this.refreshColorConfiguration(false);
 			if (!this.unloading) await this.maybeNotifyMissingConfigFiles();
 		} catch (error) {
@@ -236,7 +261,11 @@ export default class ScopeTabsPlugin extends Plugin {
 		if (this.portableConfigurationTask) return this.portableConfigurationTask;
 		const operation = (async () => {
 			await this.vaultConfig.ensureRoot();
-			for (const book of this.scopeResolver.listBooks()) await this.bookOrder.reconcileExistingConfigs(book);
+			for (const book of this.scopeResolver.listBooks()) {
+				const folder = this.app.vault.getFolderByPath(book.folderPath);
+				if (folder) await this.bookOrder.ensureConfig(folder);
+				await this.bookOrder.reconcileExistingConfigs(book);
+			}
 			await this.migrateBookConfiguration();
 			this.portableConfigurationReady = true;
 		})();
@@ -266,6 +295,7 @@ export default class ScopeTabsPlugin extends Plugin {
 			manualColors: this.settings.manualColors,
 			manualTabTextColors: this.settings.manualTabTextColors,
 			indexMoveDecision: this.settings.indexMoveDecision,
+			frontmatterDisplayMode: this.settings.frontmatterDisplayMode,
 			configurationMigratedV1: this.configurationMigrated,
 			automaticColorsV1: this.settings.manualColors,
 			runtimeStateV1: this.runtimeState,
@@ -308,6 +338,21 @@ export default class ScopeTabsPlugin extends Plugin {
 		if (this.unloading) return;
 		this.navigation.reconcileGroupRegistry();
 		this.decorations.refresh();
+	}
+
+	private syncSuggestedPluginKeys(): Promise<void> {
+		if (this.unloading || !this.portableConfigurationReady || !this.scopeResolver.hasMultipleBooks() || !this.settings.indexTitleSync || !this.settings.indexTitleFollowPlugin) return Promise.resolve();
+		if (this.suggestedPluginSyncTask) return this.suggestedPluginSyncTask;
+		const operation = (async () => {
+			const status = this.configNoteTitles.propertyPluginStatus();
+			if (status.state !== 'connected' || status.propertyKey === this.settings.indexTitleProperty) return;
+			const previous = this.settings.indexTitleProperty;
+			this.settings.indexTitleProperty = status.propertyKey;
+			await this.vaultConfig.set('indexTitleProperty', status.propertyKey);
+			await this.configNoteTitles.reconcileAll(status.propertyKey, previous);
+		})().finally(() => { if (this.suggestedPluginSyncTask === operation) this.suggestedPluginSyncTask = null; });
+		this.suggestedPluginSyncTask = operation;
+		return operation;
 	}
 }
 

@@ -11,10 +11,11 @@ const HELP: Record<string, string> = {
 	isFreshClone: 'Open freshCloneOpeningPath once on next startup, then set this to false.',
 	freshCloneOpeningPath: 'Vault-relative Markdown path or first-level book folder. Invalid paths preserve saved workspace; otherwise use the newest note.',
 	fileOrder: 'Immediate child names in manual display order. The folder config note is omitted and pinned separately.',
-	'creation-date': 'Creation timestamp for Markdown notes; other file types use their filesystem creation time. Format YY-MM-DD HH:mm:ss.SSS.',
+	'creation-date': 'Filesystem creation timestamp maintained for Markdown notes. Format YY-MM-DD HH:mm:ss.SSS.',
 	orderingEnabled: 'True after this book has been prepared for portable ordering.',
-	orderingType: 'Book default sort: manual, alphabetical, or creation-date. The ordering button cycles these values.',
-	forcedOrderingType: 'False inherits the book/parent order; manual, alphabetical, or creation-date forces this folder order.',
+	orderingType: 'Book default sort: manual, alphabetical, creation-date, or properties. The ordering button cycles these values.',
+	forcedOrderingType: 'False inherits the book/parent order; manual, alphabetical, creation-date, or properties forces this folder order.',
+	forcedOrderingDirection: 'False inherits the vault/parent direction; ascending or descending permanently overrides this folder.',
 	tabInsertDirection: 'right opens beside the current tab; end appends. In a book config, false inherits the vault.',
 	bookNoteOpenMode: 'same-tab, background-tab, or focused-tab. In a book config, false inherits the vault.',
 	openBooksInExternalWindows: 'True opens new book groups in pop-outs; false uses the main window.',
@@ -41,22 +42,30 @@ const HELP: Record<string, string> = {
 	excludedBookFolders: 'First-level folder names excluded from book routing and automatic book config generation.',
 	excludedFileGroupLocation: 'next-to-current opens one shared excluded-files group beside the active group; popout uses a separate window.',
 	orderingDirection: 'descending shows newest date-sorted items first; ascending reverses the ordinary item order.',
-	configNotePosition: 'top or bottom pins every folder config note outside fileOrder.',
 	forceUpdateLinks: 'True keeps Obsidian automatic internal-link updates enabled.',
 	'template-folder': 'Default vault folder for bare global template filenames and book-relative override templates.',
-	'template-md': 'Markdown template mapping: template.md: [date format, prefix, apply filename convention]. Empty disables Markdown templating.',
-	'template-canvas': 'Canvas template mapping: template.canvas: [date format, prefix, apply filename convention]. Empty disables Canvas templating.',
-	'template-base': 'Base template mapping: template.base: [date format, prefix, apply filename convention]. Empty disables Base templating.',
+	'template-date-format': 'Shared date format for filename conventions and date ordering. Folder values inherit from the nearest parent.',
+	'template-md': 'Markdown template mapping: template.md: [prefix, apply filename convention]. Empty disables Markdown templating.',
+	'template-canvas': 'Canvas template mapping: template.canvas: [prefix, apply filename convention]. Empty disables Canvas templating.',
+	'template-base': 'Base template mapping: template.base: [prefix, apply filename convention]. Empty disables Base templating.',
 	'template-paths-under-global-folder': 'True resolves this folder config\'s template paths under the default template folder and first-level book name; false uses exact vault-relative paths.',
+	'template-excluded-subfolders': 'Relative subfolder paths that skip template contents and filename conventions.',
+	'article-placeholder-hidden-previous': 'True hides missing Previous article creation suggestions in this folder; false or removal shows them again.',
+	'article-placeholder-hidden-next': 'True hides missing Next article creation suggestions in this folder; false or removal shows them again.',
 };
 
 const LEGACY_HELP: Record<string, readonly string[]> = {
 	showBookLabel: ['True shows a subtle book label above Markdown notes.'],
 	fileOrder: ['Immediate child names in manual display order. Missing names are added; stale names are removed.'],
 	'creation-date': [
+		'Creation timestamp for Markdown notes; other file types use their filesystem creation time. Format YY-MM-DD HH:mm:ss.SSS.',
 		'Creation date for Markdown notes; other file types use their filesystem creation time. Format YY-MM-DD.',
 		'Filesystem creation date, refreshed at startup; format YY-MM-DD.',
 	],
+	configNotePosition: ['top or bottom pins every folder config note outside fileOrder.'],
+	'template-md': ['Markdown template mapping: template.md: [date format, prefix, apply filename convention]. Empty disables Markdown templating.'],
+	'template-canvas': ['Canvas template mapping: template.canvas: [date format, prefix, apply filename convention]. Empty disables Canvas templating.'],
+	'template-base': ['Base template mapping: template.base: [date format, prefix, apply filename convention]. Empty disables Base templating.'],
 	orderingEnabled: ['True after this book has been prepared for metadata ordering.'],
 	showGridBoundaries: ['True shows theme-aware base-cell boundaries while a full Grid contains overflow books.'],
 	gridBoundaryThickness: ['Grid overflow boundary thickness in pixels, from 1 to 8.'],
@@ -151,12 +160,9 @@ export async function updateConfigFrontmatter(app: App, file: TFile, change: (fm
 		if (sameFrontmatter(cloneFrontmatter(cached), prepared) && normalizedBefore === before) return;
 	}
 	await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-		if (!prepared) {
-			applyChange(fm);
-			return;
-		}
-		for (const key of Object.keys(fm)) delete fm[key];
-		Object.assign(fm, prepared);
+		// Obsidian supplies the latest file values here. The cache is only a no-op
+		// check; replacing current values with it can erase another writer's edit.
+		applyChange(fm);
 	});
 	const cleanBefore = removeObsoleteGeneratedHelp(before);
 	await app.vault.process(file, content => addConfigComments(restoreConfigComments(cleanBefore, removeObsoleteGeneratedHelp(content), options.renamedKeys), options.aliases));

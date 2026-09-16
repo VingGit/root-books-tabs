@@ -26,19 +26,29 @@ export const DEFAULT_SETTINGS: ScopeTabsSettings = {
 	gridRows: 2,
 	gridColumns: 2,
 	orderingDirection: 'descending',
-	configNotePosition: 'top',
 	indexMoveDecision: 'ask',
 	excludedBookFolders: ['templates'],
 	excludedFileGroupLocation: 'next-to-current',
 	templateFolder: 'templates',
-	templateMd: { 'example.md': ['DD.MM.YYYY', '{{date}}_', true] },
+	templateDateFormat: 'DD.MM.YYYY',
+	templateMd: { 'example.md': ['{{date}}_', true] },
 	templateCanvas: {},
 	templateBase: {},
 	forceUpdateLinks: true,
 	tabInsertDirection: 'right',
 	bookNoteOpenMode: 'focused-tab',
+	frontmatterDisplayMode: 'inherit',
 	bookNoteOpenModeOverrides: {},
 	openBooksInExternalWindows: false,
+	indexTitleSync: true,
+	indexTitleFollowPlugin: true,
+	indexTitleProperty: 'title',
+	articleNavigatorPreviousProperty: 'PreviousArticle',
+	articleNavigatorNextProperty: 'NextArticle',
+	articleNavigatorSeeAlsoProperty: 'SeeAlso',
+	articleNavigatorFollowPluginKeys: true,
+	articleNavigatorBlacklist: 'index.md',
+	articleNavigatorPreferFilenameDates: true,
 };
 
 export const DEFAULT_RUNTIME_STATE: ScopeTabsRuntimeStateV1 = {
@@ -99,11 +109,11 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	settings.gridRows = clampGridDimension(source.gridRows);
 	settings.gridColumns = clampGridDimension(source.gridColumns);
 	if (source.orderingDirection === 'ascending' || source.orderingDirection === 'descending') settings.orderingDirection = source.orderingDirection;
-	if (source.configNotePosition === 'top' || source.configNotePosition === 'bottom') settings.configNotePosition = source.configNotePosition;
 	if (source.indexMoveDecision === 'ask' || source.indexMoveDecision === 'block' || source.indexMoveDecision === 'merge-frontmatter' || source.indexMoveDecision === 'append-body' || source.indexMoveDecision === 'replace-frontmatter' || source.indexMoveDecision === 'replace-content' || source.indexMoveDecision === 'swap') settings.indexMoveDecision = source.indexMoveDecision;
 	if (Array.isArray(source.excludedBookFolders)) settings.excludedBookFolders = sanitizeExcludedBookFolders(source.excludedBookFolders);
 	if (source.excludedFileGroupLocation === 'next-to-current' || source.excludedFileGroupLocation === 'popout') settings.excludedFileGroupLocation = source.excludedFileGroupLocation;
 	if (typeof source.templateFolder === 'string') settings.templateFolder = sanitizeTemplatePath(source.templateFolder);
+	settings.templateDateFormat = inferTemplateDateFormat(source);
 	const legacyRule = migrateLegacyTemplateRule(source);
 	settings.templateMd = sanitizeTemplateRule(source.templateMd, 'md') ?? legacyRule ?? structuredClone(DEFAULT_SETTINGS.templateMd);
 	settings.templateCanvas = sanitizeTemplateRule(source.templateCanvas, 'canvas') ?? structuredClone(DEFAULT_SETTINGS.templateCanvas);
@@ -116,6 +126,9 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 	} else if (typeof source.focusNewTabs === 'boolean') {
 		settings.bookNoteOpenMode = source.focusNewTabs ? 'focused-tab' : 'background-tab';
 	}
+	if (source.frontmatterDisplayMode === 'inherit' || source.frontmatterDisplayMode === 'visible' || source.frontmatterDisplayMode === 'hidden' || source.frontmatterDisplayMode === 'source') {
+		settings.frontmatterDisplayMode = source.frontmatterDisplayMode;
+	}
 	if (isRecord(source.bookNoteOpenModeOverrides)) {
 		for (const [bookId, mode] of Object.entries(source.bookNoteOpenModeOverrides)) {
 			if (mode === 'same-tab' || mode === 'background-tab' || mode === 'focused-tab') {
@@ -124,6 +137,15 @@ export function migrateSettings(saved: unknown): ScopeTabsSettings {
 		}
 	}
 	copyBoolean(source, settings, 'openBooksInExternalWindows');
+	copyBoolean(source, settings, 'indexTitleSync');
+	copyBoolean(source, settings, 'indexTitleFollowPlugin');
+	if (typeof source.indexTitleProperty === 'string' && source.indexTitleProperty.trim()) settings.indexTitleProperty = sanitizeFrontmatterProperty(source.indexTitleProperty);
+	if (typeof source.articleNavigatorPreviousProperty === 'string' && source.articleNavigatorPreviousProperty.trim()) settings.articleNavigatorPreviousProperty = sanitizeFrontmatterProperty(source.articleNavigatorPreviousProperty);
+	if (typeof source.articleNavigatorNextProperty === 'string' && source.articleNavigatorNextProperty.trim()) settings.articleNavigatorNextProperty = sanitizeFrontmatterProperty(source.articleNavigatorNextProperty);
+	if (typeof source.articleNavigatorSeeAlsoProperty === 'string' && source.articleNavigatorSeeAlsoProperty.trim()) settings.articleNavigatorSeeAlsoProperty = sanitizeFrontmatterProperty(source.articleNavigatorSeeAlsoProperty);
+	copyBoolean(source, settings, 'articleNavigatorFollowPluginKeys');
+	if (typeof source.articleNavigatorBlacklist === 'string') settings.articleNavigatorBlacklist = source.articleNavigatorBlacklist;
+	copyBoolean(source, settings, 'articleNavigatorPreferFilenameDates');
 	return settings;
 }
 
@@ -201,9 +223,8 @@ function migrateLegacyTemplateRule(source: Record<string, unknown>): TemplateRul
 	if (!applied.includes('md') && !applied.includes('*')) return null;
 	const path = typeof source.templateFilePath === 'string' ? sanitizeTemplatePath(source.templateFilePath) : '';
 	if (!path || !path.toLowerCase().endsWith('.md')) return null;
-	const date = typeof source.templateFileDate === 'string' ? source.templateFileDate.trim() : '';
 	const prefix = typeof source.templateFilePrefix === 'string' ? source.templateFilePrefix : '';
-	return { [path]: [date, prefix, true] };
+	return { [path]: [prefix, true] };
 }
 
 function sanitizeTemplateRule(value: unknown, type: TemplateFileType): TemplateRule | null {
@@ -212,10 +233,25 @@ function sanitizeTemplateRule(value: unknown, type: TemplateFileType): TemplateR
 	if (!entry) return {};
 	const path = sanitizeTemplatePath(entry[0]);
 	const tuple = entry[1];
-	if (!path || !path.toLowerCase().endsWith(`.${type}`) || !Array.isArray(tuple)
-		|| typeof tuple[0] !== 'string' || typeof tuple[1] !== 'string' || typeof tuple[2] !== 'boolean') return {};
-	const normalized: TemplateRuleTuple = [tuple[0].trim(), tuple[1], tuple[2]];
+	if (!path || !path.toLowerCase().endsWith(`.${type}`) || !Array.isArray(tuple)) return {};
+	const legacy = typeof tuple[0] === 'string' && typeof tuple[1] === 'string' && typeof tuple[2] === 'boolean';
+	const current = typeof tuple[0] === 'string' && typeof tuple[1] === 'boolean';
+	if (!legacy && !current) return {};
+	const normalized: TemplateRuleTuple = legacy ? [tuple[1] as string, tuple[2] as boolean] : [tuple[0] as string, tuple[1] as boolean];
 	return { [path]: normalized };
+}
+
+function inferTemplateDateFormat(source: Record<string, unknown>): string {
+	if (typeof source.templateDateFormat === 'string' && source.templateDateFormat.trim()) return source.templateDateFormat.trim();
+	if (typeof source['template-date-format'] === 'string' && source['template-date-format'].trim()) return source['template-date-format'].trim();
+	if (typeof source.templateFileDate === 'string' && source.templateFileDate.trim()) return source.templateFileDate.trim();
+	for (const key of ['templateMd', 'template-md', 'templateCanvas', 'template-canvas', 'templateBase', 'template-base']) {
+		const value = source[key];
+		if (!isRecord(value)) continue;
+		const tuple = Object.values(value)[0];
+		if (Array.isArray(tuple) && typeof tuple[0] === 'string' && typeof tuple[1] === 'string' && tuple[0].trim()) return tuple[0].trim();
+	}
+	return DEFAULT_SETTINGS.templateDateFormat;
 }
 
 function sanitizeTemplatePath(value: string): string {

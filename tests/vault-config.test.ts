@@ -20,6 +20,7 @@ function fixture(initial: Record<string, unknown> = {}, initialContent?: string)
 	const plugin = {
 		settings: structuredClone(DEFAULT_SETTINGS),
 		app: { vault: {
+			getName: () => 'Test vault',
 			getAbstractFileByPath: (path: string) => files.get(path) ?? null,
 			getFileByPath: (path: string) => files.get(path) instanceof TFile ? files.get(path) : null,
 			getMarkdownFiles: () => [...files.values()].filter(file => file instanceof TFile && file.extension === 'md'),
@@ -41,6 +42,16 @@ function fixture(initial: Record<string, unknown> = {}, initialContent?: string)
 	const service = new VaultConfigService(plugin as never);
 	return { plugin, service, fm, add, files, writes: () => writes, failNext: () => { fail = true; } };
 }
+
+test('root removes plugin-owned folder ordering fields while preserving a plain user collision', async () => {
+	const f = fixture({ fileOrder: ['user-data'], 'book-tabs-fileOrder': ['book'], forcedOrderingDirection: 'ascending' },
+		'---\nfileOrder: [user-data]\nbook-tabs-fileOrder: [book]\n# False inherits the vault/parent direction; ascending or descending permanently overrides this folder.\nforcedOrderingDirection: ascending\n---\nKeep this body');
+	await f.service.ensureRoot();
+	assert.deepEqual(f.fm.fileOrder, ['user-data']);
+	assert.equal('book-tabs-fileOrder' in f.fm, false);
+	assert.equal('forcedOrderingDirection' in f.fm, false);
+	assert.deepEqual(f.fm.aliases, ['Test vault']);
+});
 
 test('root config preserves fields, local preferences, and pending edits during metadata reload', async () => {
 	const f = fixture({ showBookLabel: true, colorTabs: true, custom: { keep: 1 } });
@@ -127,7 +138,7 @@ test('the original applied file types field is removed when its generated help p
 	assert.equal('book-tabs-template-file-applied-To' in f.fm, false);
 });
 
-test('legacy portable template fields migrate into the new Markdown mapping', async () => {
+test('legacy portable template fields migrate into the shared date format and Markdown mapping', async () => {
 	const initial = {
 		'template-file-prefix': 'Legacy-{{date}}-',
 		'template-file-date': 'YYYY-MM-DD',
@@ -136,9 +147,19 @@ test('legacy portable template fields migrate into the new Markdown mapping', as
 	};
 	const f = fixture(initial);
 	await f.service.load();
-	assert.deepEqual(f.plugin.settings.templateMd, { 'custom/note.md': ['YYYY-MM-DD', 'Legacy-{{date}}-', true] });
+	assert.equal(f.plugin.settings.templateDateFormat, 'YYYY-MM-DD');
+	assert.deepEqual(f.plugin.settings.templateMd, { 'custom/note.md': ['Legacy-{{date}}-', true] });
 	await f.service.ensureRoot();
-	assert.deepEqual(managed(f.fm, 'template-md'), { 'custom/note.md': ['YYYY-MM-DD', 'Legacy-{{date}}-', true] });
+	assert.equal(managed(f.fm, 'template-date-format'), 'YYYY-MM-DD');
+	assert.deepEqual(managed(f.fm, 'template-md'), { 'custom/note.md': ['Legacy-{{date}}-', true] });
+});
+
+test('retired config-note position is removed while an unowned plain collision remains', async () => {
+	const f = fixture({ configNotePosition: 'my own value', 'book-tabs-configNotePosition': 'bottom' });
+	await f.service.ensureRoot();
+	assert.equal(f.fm.configNotePosition, 'my own value');
+	assert.equal('book-tabs-configNotePosition' in f.fm, false);
+	assert.equal('configNotePosition' in f.service.values, false);
 });
 
 test('rapid saves retain reversals and do not mark later unsaved edits persisted', async () => {

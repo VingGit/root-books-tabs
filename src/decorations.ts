@@ -1,5 +1,7 @@
 import { MarkdownView, Menu, Notice, TAbstractFile, TFolder, WorkspaceLeaf, WorkspaceWindow, setIcon, setTooltip, type Vault } from 'obsidian';
 import { ORDERING_TYPES } from './book-order';
+import { readPluginFrontmatter, updateConfigFrontmatter, writePluginFrontmatter } from './config-frontmatter';
+import { compileArticleBlacklist } from './article-navigator';
 import { CreateBookModal } from './settings';
 import { getLeafFile } from './leaf-file';
 import type ScopeTabsPlugin from './main';
@@ -158,6 +160,7 @@ export class DecorationController {
 		}
 		this.customStyleSheets.clear();
 		for (const doc of docs) {
+			doc.querySelectorAll('.scope-tabs-article-placeholders').forEach(element => element.remove());
 			doc.querySelectorAll('.scope-tabs-grid-base-cell').forEach(el => el.classList.remove('scope-tabs-grid-base-cell'));
 			doc.querySelectorAll('.scope-tabs-book-menu-tab, .scope-tabs-book-mode-toggle, .scope-tabs-vault-config-button, .scope-tabs-book-switcher, .scope-tabs-change-book, .scope-tabs-book-subtree-controls, .scope-tabs-book-actions').forEach((el) => el.remove());
 			doc.querySelectorAll<HTMLElement>('.scope-tabs-book-label, .scope-tabs-book-mode-hidden, .scope-tabs-book-mode-selected, .scope-tabs-book-mode-secondary, .scope-tabs-book-mode-excluded, .scope-tabs-book-mode-excluded-hidden, .scope-tabs-book-root-title-hidden').forEach((el) => {
@@ -206,11 +209,85 @@ export class DecorationController {
 			leaf.view.containerEl.style.removeProperty('--scope-tabs-book-color');
 			leaf.view.containerEl.querySelector(':scope > .scope-tabs-book-label')?.remove();
 			const book = this.plugin.scopeResolver.resolveFile(getLeafFile(leaf, this.plugin.app.vault));
-			if (!book) return;
+			if (!book) {
+				leaf.view.containerEl.querySelectorAll('.scope-tabs-article-placeholders').forEach(element => element.remove());
+				return;
+			}
 			const color = this.plugin.colors.getColor(book);
 			this.decorateLeaf(leaf, book, color);
+			this.decorateArticlePlaceholders(leaf);
 			this.decorateTabHeader(leaf, book, color);
 		});
+	}
+
+	private decorateArticlePlaceholders(leaf: WorkspaceLeaf): void {
+		if (!(leaf.view instanceof MarkdownView)) return;
+		const existing = leaf.view.contentEl.querySelector<HTMLElement>(':scope > .scope-tabs-article-placeholders');
+		const file = leaf.view.file;
+		if (!file?.parent || !this.plugin.scopeResolver.resolveFile(file)
+			|| compileArticleBlacklist(this.plugin.settings.articleNavigatorBlacklist).matches(file.path)
+			|| file.path === this.plugin.bookOrder.getConfigPath(file.parent)) { existing?.remove(); return; }
+		const folder = file.parent;
+		const config = this.plugin.app.vault.getFileByPath(this.plugin.bookOrder.getConfigPath(folder));
+		const folderValues = config ? this.plugin.app.metadataCache.getFileCache(config)?.frontmatter ?? {} : {};
+		const cachedValues: unknown = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter;
+		const noteValues: Record<string, unknown> = isUnknownRecord(cachedValues) ? cachedValues : {};
+		const resolved = this.plugin.articleNavigator.resolveKeys({
+			previousKey: this.plugin.settings.articleNavigatorPreviousProperty,
+			nextKey: this.plugin.settings.articleNavigatorNextProperty,
+			seeAlsoKey: this.plugin.settings.articleNavigatorSeeAlsoProperty,
+		}, this.plugin.settings.articleNavigatorFollowPluginKeys).keys;
+		const directions = [
+			{ kind: 'previous' as const, key: resolved.previousKey, reverse: resolved.nextKey, label: 'Previous article', defaultName: 'Previous note' },
+			{ kind: 'next' as const, key: resolved.nextKey, reverse: resolved.previousKey, label: 'Next article', defaultName: 'Next note' },
+		];
+		const visible = directions.filter(direction => {
+			const value = noteValues[direction.key];
+			const missing = value === undefined || value === null || value === '' || Array.isArray(value) && value.length === 0;
+			return missing && readPluginFrontmatter(folderValues, `article-placeholder-hidden-${direction.kind}`) !== true;
+		});
+		if (!visible.length) { existing?.remove(); return; }
+		const signature = JSON.stringify([file.path, visible.map(direction => [direction.kind, direction.key, direction.reverse]),
+			this.plugin.templates.resolveForFolder(folder)]);
+		if (existing?.dataset.scopeTabsArticleSignature === signature) return;
+		existing?.remove();
+		const container = leaf.view.contentEl.createDiv({ cls: 'scope-tabs-article-placeholders' });
+		container.dataset.scopeTabsArticleSignature = signature;
+		leaf.view.contentEl.prepend(container);
+		for (const direction of visible) {
+			const card = container.createDiv({ cls: 'scope-tabs-article-placeholder' });
+			card.createSpan({ cls: 'scope-tabs-article-placeholder-label', text: direction.label });
+			const close = card.createEl('button', { cls: 'clickable-icon scope-tabs-article-placeholder-close', attr: { type: 'button', 'aria-label': `Hide ${direction.label} suggestions in ${folder.path}` } });
+			setIcon(close, 'x');
+			const input = card.createEl('input', { cls: 'scope-tabs-article-placeholder-input', attr: { type: 'text', value: direction.defaultName, 'aria-label': `${direction.label} filename` } });
+			input.value = direction.defaultName;
+			const preview = card.createSpan({ cls: 'scope-tabs-article-placeholder-preview' });
+			const refreshPreview = (): void => preview.setText(`Create: ${this.plugin.templates.previewSuggestedMarkdownPath(folder, input.value || direction.defaultName)}`);
+			input.addEventListener('input', refreshPreview); refreshPreview();
+			const create = card.createEl('button', { text: 'Create', cls: 'mod-cta', attr: { type: 'button' } });
+			close.addEventListener('click', () => {
+				void (async () => {
+					const folderConfig = await this.plugin.bookOrder.ensureConfig(folder);
+					await updateConfigFrontmatter(this.plugin.app, folderConfig, (frontmatter, context) => {
+						writePluginFrontmatter(frontmatter, `article-placeholder-hidden-${direction.kind}`, true, context.ownedPlainKeys);
+					});
+					new Notice(`Hidden ${direction.label.toLowerCase()} suggestions for ${folder.path}. Remove the matching article-placeholder-hidden property from its config note to restore them.`);
+					this.refresh();
+				})().catch(console.error);
+			});
+			create.addEventListener('click', () => {
+				create.setAttr('disabled', 'true');
+				void (async () => {
+					const created = await this.plugin.templates.createSuggestedMarkdown(folder, input.value || direction.defaultName);
+					const linkToCreated = `[[${this.plugin.app.metadataCache.fileToLinktext(created, file.path, true)}]]`;
+					const linkToCurrent = `[[${this.plugin.app.metadataCache.fileToLinktext(file, created.path, true)}]]`;
+					await this.plugin.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => { frontmatter[direction.key] = linkToCreated; });
+					await this.plugin.app.fileManager.processFrontMatter(created, (frontmatter: Record<string, unknown>) => { frontmatter[direction.reverse] = linkToCurrent; });
+					await leaf.openFile(created);
+					this.refresh();
+				})().catch((error: unknown) => { console.error(error); new Notice('Could not create the suggested article.'); create.removeAttribute('disabled'); });
+			});
+		}
 	}
 
 	/**
@@ -611,8 +688,9 @@ export class DecorationController {
 		}
 		root.querySelectorAll('.scope-tabs-book-subtree-controls').forEach((controls) => controls.remove());
 		root.querySelectorAll<HTMLElement>('.scope-tabs-folder-note-file').forEach(item => item.removeClass('scope-tabs-folder-note-file'));
-		root.querySelectorAll<HTMLElement>('.scope-tabs-folder-note-title').forEach(item => item.removeClass('scope-tabs-folder-note-title'));
+		root.querySelectorAll<HTMLElement>('.scope-tabs-folder-note-title, .scope-tabs-folder-note-existing').forEach(item => item.removeClasses(['scope-tabs-folder-note-title', 'scope-tabs-folder-note-existing']));
 		root.querySelectorAll('.scope-tabs-empty-book').forEach(el => el.remove());
+		root.querySelectorAll<HTMLElement>('.scope-tabs-book-empty-secondary, .scope-tabs-book-empty-primary').forEach(item => item.removeClasses(['scope-tabs-book-empty-secondary', 'scope-tabs-book-empty-primary']));
 		if (restoreOrder) tree?.restoreOrder();
 		decoration.excludedBody.empty();
 		tree?.invalidate();
@@ -775,6 +853,13 @@ export class DecorationController {
 					new Notice('Could not open this book\'s folder note.');
 				});
 			});
+			bar.addEventListener('contextmenu', (event: MouseEvent) => {
+				if (this.orderingBookId) return;
+				const book = this.plugin.scopeResolver.listBooks().find(candidate => candidate.id === this.plugin.settings.selectedBookId);
+				if (!book) return;
+				event.preventDefault(); event.stopPropagation();
+				this.beginBookRename(bar, book);
+			});
 			const bookActions = filesParent.createDiv({ cls: 'scope-tabs-book-actions' });
 			filesParent.insertBefore(bookActions, files);
 			const openAnother = bookActions.createEl('button', {
@@ -874,8 +959,9 @@ export class DecorationController {
 			const book = this.plugin.scopeResolver.resolveFolder(folder);
 			const note = folder ? vault.getFileByPath(this.plugin.bookOrder.getConfigPath(folder)) : null;
 			const clickable = !!(enabled && book && (path === book.id || note));
-			item.querySelector<HTMLElement>(':scope > .nav-folder-title .nav-folder-title-content')
-				?.toggleClass('scope-tabs-folder-note-title', clickable);
+			const title = item.querySelector<HTMLElement>(':scope > .nav-folder-title .nav-folder-title-content');
+			title?.toggleClass('scope-tabs-folder-note-title', clickable);
+			title?.toggleClass('scope-tabs-folder-note-existing', !!(enabled && book && note));
 		}
 	}
 
@@ -899,7 +985,13 @@ export class DecorationController {
 		this.applyExplorerOrdering(root);
 		decoration.modelReady = tree !== null;
 		const folder = this.plugin.app.vault.getFolderByPath(selected.id);
-		decoration.bar.setText(this.orderingBookId && folder ? `Ordering type: ${this.plugin.bookOrder.getType(folder)}` : selected.name);
+		const orderingType = this.orderingBookId && folder ? this.plugin.bookOrder.getType(folder) : null;
+		const articleKeys = this.plugin.articleNavigator.resolveKeys({ previousKey: this.plugin.settings.articleNavigatorPreviousProperty,
+			nextKey: this.plugin.settings.articleNavigatorNextProperty, seeAlsoKey: this.plugin.settings.articleNavigatorSeeAlsoProperty },
+		this.plugin.settings.articleNavigatorFollowPluginKeys).keys;
+		if (!decoration.bar.querySelector('.scope-tabs-book-rename-input')) decoration.bar.setText(orderingType === 'properties'
+			? `Properties: ${articleKeys.previousKey} / ${articleKeys.nextKey}`
+			: orderingType ? `Ordering type: ${orderingType}` : selected.name);
 		decoration.bar.setAttr('aria-label', this.orderingBookId ? `${decoration.bar.textContent}. Click to cycle ordering type.` : `Open ${selected.name} folder note`);
 		decoration.bar.toggleClass('scope-tabs-order-cycle', !!this.orderingBookId);
 		decoration.bar.toggle(this.plugin.settings.bookModeEnabled);
@@ -927,8 +1019,13 @@ export class DecorationController {
 			el.style.removeProperty('order');
 			el.removeClasses(['scope-tabs-book-mode-hidden', 'scope-tabs-book-mode-selected', 'scope-tabs-book-mode-secondary', 'scope-tabs-book-mode-excluded', 'scope-tabs-book-mode-excluded-hidden', 'scope-tabs-book-root-title-hidden']);
 			el.querySelector<HTMLElement>(':scope > .nav-folder-title')?.removeClass('scope-tabs-book-root-title-hidden');
+			el.removeClass('scope-tabs-book-empty-secondary');
+			el.removeClass('scope-tabs-book-empty-primary');
+			const path = getExplorerItemPath(el);
+			if (!this.plugin.settings.bookModeEnabled || path === selected.id || !openBookIds.has(path)) el.querySelector(':scope > .scope-tabs-empty-book')?.remove();
 		}
 		if (this.plugin.settings.bookModeEnabled && !tree) {
+			decoration.filesParent.querySelector(':scope > .scope-tabs-empty-book')?.remove();
 			root.removeClass('scope-tabs-book-mode');
 			decoration.bar.toggle(false);
 			decoration.bookActions.toggle(false);
@@ -936,6 +1033,7 @@ export class DecorationController {
 			return;
 		}
 		if (!this.plugin.settings.bookModeEnabled) {
+			decoration.filesParent.querySelector(':scope > .scope-tabs-empty-book')?.remove();
 			decoration.restoreExcludedMenuSource?.();
 			if (this.explorersShowingExcluded.has(root)) {
 				const expanded = new Set(excludedPaths.filter(path => tree?.itemsByPath.get(path)?.isCollapsed() === false));
@@ -989,6 +1087,7 @@ export class DecorationController {
 				if (this.collapsedSecondaryBookIds.has(book.id)) treeItem?.collapse();
 				else treeItem?.expand();
 				this.ensureSubtreeControls(item, book);
+				this.renderSecondaryEmptyBook(item, book);
 			} else {
 				subtreeControls?.remove();
 				item.addClass('scope-tabs-book-mode-hidden');
@@ -1078,24 +1177,54 @@ export class DecorationController {
 	}
 
 	private renderEmptyBook(root: HTMLElement, decoration: ExplorerDecoration, book: BookScope): void {
-		root.querySelector('.scope-tabs-empty-book')?.remove();
+		const existing = decoration.filesParent.querySelector<HTMLElement>(':scope > .scope-tabs-empty-book');
 		const notes = this.plugin.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(`${book.id}/`)
 			&& (!file.parent || file.path !== this.plugin.bookOrder.getConfigPath(file.parent)));
-		if (notes.some(file => !this.plugin.bookIgnore.isHidden(file)) || this.plugin.bookIgnore.revealedBooks.has(book.id)) return;
+		if (notes.some(file => !this.plugin.bookIgnore.isHidden(file)) || this.plugin.bookIgnore.revealedBooks.has(book.id)) { existing?.remove(); return; }
+		root.querySelector<HTMLElement>('.scope-tabs-book-mode-selected')?.addClass('scope-tabs-book-empty-primary');
+		const signature = `${book.id}:${notes.length}`;
+		if (existing?.dataset.scopeTabsEmptySignature === signature) return;
+		existing?.remove();
 		const empty = decoration.filesParent.createDiv({ cls: 'scope-tabs-empty-book' });
+		empty.dataset.scopeTabsEmptySignature = signature;
 		decoration.filesParent.insertBefore(empty, decoration.files);
-		empty.createEl('button', { text: 'Create your first page for this book' }).addEventListener('click', () => {
-			void (async () => {
-				let suffix = 0;
-				let path = `${book.id}/Untitled.md`;
-				while (this.plugin.app.vault.getAbstractFileByPath(path)) path = `${book.id}/Untitled ${++suffix}.md`;
-				const file = await this.plugin.app.vault.create(path, '');
-				await this.plugin.navigation.activateBook(book, file);
-				this.refreshExplorer();
-			})();
-		});
+		this.addCreateFirstNoteButton(empty, book);
 		if (notes.length) empty.createEl('button', { text: 'Show hidden pages for this session' }).addEventListener('click', () => {
 			this.plugin.bookIgnore.revealedBooks.add(book.id); this.refreshExplorer();
+		});
+	}
+
+	private renderSecondaryEmptyBook(folderItem: HTMLElement, book: BookScope): void {
+		const existing = folderItem.querySelector<HTMLElement>(':scope > .scope-tabs-empty-book');
+		folderItem.removeClass('scope-tabs-book-empty-secondary');
+		const notes = this.plugin.app.vault.getMarkdownFiles().filter(file => file.path.startsWith(`${book.id}/`)
+			&& (!file.parent || file.path !== this.plugin.bookOrder.getConfigPath(file.parent)));
+		if (notes.some(file => !this.plugin.bookIgnore.isHidden(file)) || this.plugin.bookIgnore.revealedBooks.has(book.id)) { existing?.remove(); return; }
+		folderItem.addClass('scope-tabs-book-empty-secondary');
+		const signature = `${book.id}:${notes.length}`;
+		if (existing?.dataset.scopeTabsEmptySignature === signature) return;
+		existing?.remove();
+		const empty = folderItem.createDiv({ cls: 'scope-tabs-empty-book' });
+		empty.dataset.scopeTabsEmptySignature = signature;
+		const children = folderItem.querySelector<HTMLElement>(':scope > .nav-folder-children');
+		if (children) folderItem.insertBefore(empty, children);
+		this.addCreateFirstNoteButton(empty, book);
+		if (notes.length) empty.createEl('button', { text: 'Show hidden pages for this session' }).addEventListener('click', () => {
+			this.plugin.bookIgnore.revealedBooks.add(book.id); this.refreshExplorer();
+		});
+	}
+
+	private addCreateFirstNoteButton(container: HTMLElement, book: BookScope): void {
+		const button = container.createEl('button', { text: 'Add your first note' });
+		button.addEventListener('click', () => {
+			button.disabled = true;
+			void (async () => {
+				const folder = this.plugin.app.vault.getFolderByPath(book.id);
+				if (!folder) throw new Error('Book folder no longer exists.');
+				const file = await this.plugin.templates.createSuggestedMarkdown(folder, 'Untitled');
+				await this.plugin.navigation.activateBook(book, file);
+				this.refreshExplorer();
+			})().catch((error: unknown) => { console.error(error); button.disabled = false; new Notice('Could not create the first note.'); });
 		});
 	}
 
@@ -1153,6 +1282,15 @@ export class DecorationController {
 					if (row.hasClass('scope-tabs-order-fixed')) row.removeClass('scope-tabs-order-fixed');
 					if (row.hasAttribute('aria-disabled')) row.removeAttribute('aria-disabled');
 				}
+			}
+			for (const row of Array.from(decoration.files.querySelectorAll<HTMLElement>('.nav-folder-title'))) {
+				const path = rowPath(row);
+				const folder = belongs(path) ? this.plugin.app.vault.getFolderByPath(path) : null;
+				const override = folder ? this.plugin.bookOrder.getDirectionOverride(folder) : null;
+				let label = row.querySelector<HTMLElement>(':scope > .scope-tabs-order-direction-override');
+				if (!override) { label?.remove(); continue; }
+				if (!label) label = row.createSpan({ cls: 'scope-tabs-order-direction-override' });
+				label.setText(override);
 			}
 		};
 		const position = () => {
@@ -1284,6 +1422,7 @@ export class DecorationController {
 			positionFrame = null;
 			cancelDrag(); resize.disconnect(); mutations.disconnect(); highlight.remove(); root.removeClass('scope-tabs-ordering'); root.style.removeProperty('--scope-tabs-order-color');
 			decoration.files.querySelectorAll<HTMLElement>('.scope-tabs-order-fixed').forEach(row => { row.removeClass('scope-tabs-order-fixed'); row.removeAttribute('aria-disabled'); });
+			decoration.files.querySelectorAll('.scope-tabs-order-direction-override').forEach(label => label.remove());
 			doc.removeEventListener('scroll', queuePosition, true); doc.defaultView?.removeEventListener('resize', queuePosition);
 			doc.removeEventListener('click', click, true); doc.removeEventListener('dblclick', click, true); doc.removeEventListener('contextmenu', click, true);
 			doc.removeEventListener('keydown', key, true); doc.removeEventListener('pointerdown', start, true); doc.removeEventListener('pointermove', over, true); doc.removeEventListener('pointerup', drop, true); doc.removeEventListener('pointercancel', cancelDrag, true);
@@ -1386,6 +1525,13 @@ export class DecorationController {
 					new Notice('Could not open this book\'s folder note.');
 				});
 			});
+			bar.addEventListener('contextmenu', (event: MouseEvent) => {
+				const id = controlsEl.dataset.bookId;
+				const currentBook = this.plugin.scopeResolver.listBooks().find(candidate => candidate.id === id);
+				if (!currentBook) return;
+				event.preventDefault(); event.stopPropagation();
+				this.beginBookRename(bar, currentBook);
+			});
 			closeButton.addEventListener('click', (event: MouseEvent) => {
 				event.stopPropagation();
 				const id = controlsEl.dataset.bookId;
@@ -1466,9 +1612,11 @@ export class DecorationController {
 		const closeButton = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-close-button');
 		const copy = controls.querySelector<HTMLButtonElement>(':scope > .scope-tabs-book-subtree-copy');
 		if (!bar || !closeButton || !handle || !reorder || !copy) return;
-		let title = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-title');
-		if (!title) title = bar.createSpan({ cls: 'scope-tabs-book-subtree-title' });
-		if (title.textContent !== book.name) title.setText(book.name);
+		if (!bar.querySelector('.scope-tabs-book-rename-input')) {
+			let title = bar.querySelector<HTMLElement>(':scope > .scope-tabs-book-subtree-title');
+			if (!title) title = bar.createSpan({ cls: 'scope-tabs-book-subtree-title' });
+			if (title.textContent !== book.name) title.setText(book.name);
+		}
 		const collapsed = this.collapsedSecondaryBookIds.has(book.id);
 		setIcon(handle, collapsed ? 'chevron-right' : 'chevron-down');
 		setTooltip(bar, `Open ${book.name} folder note`, { delay: 0, placement: 'bottom' });
@@ -1481,6 +1629,55 @@ export class DecorationController {
 		setTooltip(copy, `Open another ${book.name} instance`, { delay: 0, placement: 'right' });
 		bar.toggleClass('scope-tabs-book-switcher-colored', this.plugin.settings.colorBookSwitcher);
 		bar.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
+	}
+
+	private beginBookRename(button: HTMLElement, book: BookScope): void {
+		if (button.querySelector('.scope-tabs-book-rename-input')) return;
+		const folder = this.plugin.app.vault.getFolderByPath(book.id);
+		if (!folder || !folder.parent?.isRoot()) return;
+		button.empty();
+		const input = button.createEl('input', {
+			cls: 'scope-tabs-book-rename-input',
+			attr: { type: 'text', value: book.name, 'aria-label': `Rename ${book.name}` },
+		});
+		input.value = book.name;
+		input.addEventListener('click', event => event.stopPropagation());
+		input.addEventListener('contextmenu', event => event.stopPropagation());
+		let finished = false;
+		const cancel = (): void => { if (finished) return; finished = true; button.empty(); this.refreshExplorer(); };
+		const commit = async (): Promise<void> => {
+			if (finished) return;
+			const name = input.value.trim();
+			if (!name || /[\\/:*?"<>|]/.test(name) || name === '.' || name === '..') {
+				new Notice('Enter a valid first-level folder name.'); input.focus(); input.select(); return;
+			}
+			if (name === book.name) { cancel(); return; }
+			if (this.plugin.app.vault.getAbstractFileByPath(name)) {
+				new Notice('A root file or folder already uses that name.'); input.focus(); input.select(); return;
+			}
+			finished = true;
+			button.empty();
+			const wasSelected = this.plugin.settings.selectedBookId === book.id;
+			try {
+				await this.plugin.app.fileManager.renameFile(folder, name);
+				if (wasSelected) {
+					this.plugin.settings.selectedBookId = name;
+					this.plugin.navigation.setPrimaryBook(name);
+					await this.plugin.saveSettings();
+				}
+				const renamed = this.plugin.app.vault.getFolderByPath(name);
+				if (renamed) await this.plugin.bookOrder.ensureConfig(renamed);
+			} catch (error) {
+				console.error(error); new Notice('Could not rename this book.');
+			}
+			this.refreshExplorer();
+		};
+		input.addEventListener('keydown', event => {
+			if (event.key === 'Escape') { event.preventDefault(); cancel(); }
+			else if (event.key === 'Enter') { event.preventDefault(); void commit(); }
+		});
+		input.addEventListener('blur', () => { void commit(); });
+		input.focus(); input.select();
 	}
 
 	private showBookInstancePicker(event: MouseEvent, book: BookScope): boolean {
@@ -1822,7 +2019,7 @@ function pinConfigNote(plugin: ScopeTabsPlugin, folder: TFolder, left: TAbstract
 	const configPath = `${folder.path}/${plugin.settings.configFileBaseName}.md`;
 	const leftConfig = left.path === configPath, rightConfig = right.path === configPath;
 	if (leftConfig === rightConfig) return 0;
-	return leftConfig === (plugin.settings.configNotePosition !== 'bottom') ? -1 : 1;
+	return leftConfig ? -1 : 1;
 }
 
 /**

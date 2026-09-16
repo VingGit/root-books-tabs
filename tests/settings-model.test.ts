@@ -18,18 +18,31 @@ test('excluded group ownership survives runtime-state migration', () => {
 	assert.deepEqual(state.groups.excluded, { kind: 'excluded', location: 'main' });
 });
 
-test('legacy Markdown template settings migrate into the per-type mapping', () => {
+test('legacy Markdown template settings migrate into the shared date format and two-value mapping', () => {
 	const settings = migrateSettings({
 		templateFilePrefix: 'note-',
 		templateFileDate: 'YYYY-MM-DD',
 		templateFilePath: 'templates/note.md',
 		templateFileAppliedTo: 'md, canvas',
 	});
-	assert.deepEqual(settings.templateMd, { 'templates/note.md': ['YYYY-MM-DD', 'note-', true] });
+	assert.equal(settings.templateDateFormat, 'YYYY-MM-DD');
+	assert.deepEqual(settings.templateMd, { 'templates/note.md': ['note-', true] });
 	assert.deepEqual(settings.templateCanvas, {});
 });
 
 test('new template mappings reject mismatched extensions', () => {
-	const settings = migrateSettings({ templateCanvas: { 'wrong.md': ['', '', false] } });
+	const settings = migrateSettings({ templateCanvas: { 'wrong.md': ['', false] } });
 	assert.deepEqual(settings.templateCanvas, {});
+});
+
+test('explicit shared date format wins while legacy tuples remain readable', () => {
+	const explicit = migrateSettings({
+		templateDateFormat: 'YYYY/MM/DD',
+		templateMd: { 'note.md': ['DD.MM.YYYY', 'legacy-', true] },
+	});
+	assert.equal(explicit.templateDateFormat, 'YYYY/MM/DD');
+	assert.deepEqual(explicit.templateMd, { 'note.md': ['legacy-', true] });
+	const inferred = migrateSettings({ templateCanvas: { 'board.canvas': ['YY-MM-DD', '', false] } });
+	assert.equal(inferred.templateDateFormat, 'YY-MM-DD');
+	assert.deepEqual(inferred.templateCanvas, { 'board.canvas': ['', false] });
 });

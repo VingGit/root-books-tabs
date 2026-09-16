@@ -1,9 +1,11 @@
 import { normalizePath, TFile, TFolder, type App } from 'obsidian';
 import { updateConfigFrontmatter } from './config-frontmatter';
+import { formatDatePattern, hasTimeTokens } from './date-pattern';
 import type { TemplateFileType, TemplateRule } from './types';
 
 export interface FolderTemplateConfig {
 	templateFolder: string;
+	templateDateFormat: string;
 	templateMd: TemplateRule;
 	templateCanvas: TemplateRule;
 	templateBase: TemplateRule;
@@ -11,6 +13,8 @@ export interface FolderTemplateConfig {
 
 export interface FolderTemplateOverrides {
 	templatePathsUnderGlobalFolder?: boolean;
+	templateDateFormat?: string;
+	templateExcludedSubfolders?: string[];
 	templateMd?: TemplateRule;
 	templateCanvas?: TemplateRule;
 	templateBase?: TemplateRule;
@@ -18,7 +22,6 @@ export interface FolderTemplateOverrides {
 
 export interface TemplateRuleValues {
 	templatePath: string;
-	dateFormat: string;
 	prefix: string;
 	applyFilenameConvention: boolean;
 }
@@ -49,12 +52,15 @@ const TEMPLATE_FIELDS: readonly TemplateField[] = [
 	{ setting: 'templateBase', frontmatter: 'template-base', type: 'base' },
 ];
 const PATH_MODE_FIELD = 'template-paths-under-global-folder';
+const DATE_FORMAT_FIELD = 'template-date-format';
+const EXCLUDED_SUBFOLDERS_FIELD = 'template-excluded-subfolders';
 const LEGACY_FIELDS = ['template-file-prefix', 'template-file-date', 'template-file-path', 'template-file-applied-To', 'template-file-applied-to'] as const;
 const INVALID_FILENAME_CHARACTERS = /[\\/:*?"<>|]/g;
 
 /** Resolves portable per-type template rules and applies them to newly created vault files. */
 export class FolderTemplateService {
 	private readonly writtenFrontmatter = new Map<string, Record<string, unknown>>();
+	private readonly skipCreatedPaths = new Set<string>();
 
 	constructor(
 		private readonly plugin: FolderTemplatePlugin,
@@ -64,6 +70,7 @@ export class FolderTemplateService {
 	resolveForFolder(folder: TFolder): FolderTemplateConfig {
 		return {
 			templateFolder: this.globalTemplateFolder(),
+			templateDateFormat: this.resolveDateFormat(folder),
 			...Object.fromEntries(TEMPLATE_FIELDS.map(field => [field.setting, this.resolveRule(folder, field).rule])),
 		} as FolderTemplateConfig;
 	}
@@ -73,6 +80,11 @@ export class FolderTemplateService {
 		const overrides: FolderTemplateOverrides = {};
 		const pathMode = readManagedBoolean(values, PATH_MODE_FIELD);
 		if (pathMode !== undefined) overrides.templatePathsUnderGlobalFolder = pathMode;
+		const dateFormat = readManagedString(values, DATE_FORMAT_FIELD);
+		const legacyDate = legacyDateFromRules(values);
+		if (dateFormat?.trim() || legacyDate) overrides.templateDateFormat = dateFormat?.trim() || legacyDate;
+		const excluded = readManagedStringArray(values, EXCLUDED_SUBFOLDERS_FIELD);
+		if (excluded !== undefined) overrides.templateExcludedSubfolders = excluded;
 		for (const field of TEMPLATE_FIELDS) {
 			const storedRule = readManagedRule(values, field);
 			const legacy = field.type === 'md' && hasLegacyMarkdownValues(values);
@@ -93,7 +105,8 @@ export class FolderTemplateService {
 			.filter(file => file.name === configName && file.parent !== null && !file.parent.isRoot()
 				&& this.plugin.scopeResolver.resolveFile(file) !== null)
 			.map(file => ({ folder: file.parent!, overrides: this.readFolderOverrides(file.parent!) }))
-			.filter(({ overrides }) => TEMPLATE_FIELDS.some(field => overrides[field.setting] !== undefined))
+			.filter(({ overrides }) => TEMPLATE_FIELDS.some(field => overrides[field.setting] !== undefined)
+				|| overrides.templateDateFormat !== undefined || overrides.templateExcludedSubfolders !== undefined)
 			.sort((left, right) => left.folder.path.localeCompare(right.folder.path))
 			.map(({ folder, overrides }) => ({ folder, overrides, effective: this.resolveForFolder(folder) }));
 	}
@@ -125,6 +138,10 @@ export class FolderTemplateService {
 			}
 			removeManagedBoolean(frontmatter, PATH_MODE_FIELD, context.ownedPlainKeys);
 			frontmatter[`book-tabs-${PATH_MODE_FIELD}`] = overrides.templatePathsUnderGlobalFolder ?? true;
+			removeManagedBoolean(frontmatter, DATE_FORMAT_FIELD, context.ownedPlainKeys);
+			if (overrides.templateDateFormat?.trim()) frontmatter[`book-tabs-${DATE_FORMAT_FIELD}`] = overrides.templateDateFormat.trim();
+			removeManagedBoolean(frontmatter, EXCLUDED_SUBFOLDERS_FIELD, context.ownedPlainKeys);
+			if (overrides.templateExcludedSubfolders !== undefined) frontmatter[`book-tabs-${EXCLUDED_SUBFOLDERS_FIELD}`] = sanitizeExcludedSubfolders(overrides.templateExcludedSubfolders);
 			for (const legacy of LEGACY_FIELDS) removeManagedBoolean(frontmatter, legacy, context.ownedPlainKeys);
 			this.writtenFrontmatter.set(file.path, { ...frontmatter });
 		});
@@ -180,7 +197,9 @@ export class FolderTemplateService {
 	refresh(file: TFile): void { this.writtenFrontmatter.delete(file.path); }
 
 	async handleCreate(file: TFile): Promise<boolean> {
+		if (this.skipCreatedPaths.delete(file.path)) return false;
 		if (!file.parent || !this.plugin.scopeResolver.resolveFile(file) || this.isConfigNote(file)) return false;
+		if (this.isTemplateExcluded(file.parent)) return false;
 		const field = TEMPLATE_FIELDS.find(candidate => candidate.type === file.extension.toLowerCase());
 		if (!field) return false;
 		const resolved = this.resolveRule(file.parent, field);
@@ -197,7 +216,7 @@ export class FolderTemplateService {
 
 		let changed = false;
 		if (values.applyFilenameConvention && values.prefix) {
-			const prefixedPath = this.prefixedPath(file, values);
+			const prefixedPath = this.prefixedPath(file, values, this.resolveDateFormat(file.parent));
 			if (prefixedPath !== file.path) {
 				await this.plugin.app.fileManager.renameFile(file, prefixedPath);
 				changed = true;
@@ -208,6 +227,46 @@ export class FolderTemplateService {
 		const contents = await this.plugin.app.vault.readBinary(template);
 		await this.plugin.app.vault.modifyBinary(file, contents);
 		return true;
+	}
+
+	previewSuggestedMarkdownPath(folder: TFolder, requestedName: string): string {
+		const base = sanitizeFilenamePart(requestedName.trim().replace(/\.md$/i, '')) || 'Untitled';
+		let name = `${base}.md`;
+		if (!this.isTemplateExcluded(folder)) {
+			const values = ruleValues(this.resolveRule(folder, TEMPLATE_FIELDS[0]!).rule);
+			if (values?.applyFilenameConvention && values.prefix) {
+				const dateFormat = this.resolveDateFormat(folder);
+				const initialToken = formatDatePattern(this.now(), dateFormat, false);
+				const initialPrefix = sanitizeFilenamePart(values.prefix.replaceAll('{{date}}', initialToken));
+				const collision = values.prefix.includes('{{date}}') && !hasTimeTokens(dateFormat)
+					&& folder.children.some(child => child.name.startsWith(initialPrefix));
+				const token = collision ? formatDatePattern(this.now(), dateFormat, true) : initialToken;
+				name = `${sanitizeFilenamePart(values.prefix.replaceAll('{{date}}', token))}${name}`;
+			}
+		}
+		let path = normalizePath(`${folder.path}/${name}`), suffix = 2;
+		while (this.plugin.app.vault.getAbstractFileByPath(path)) path = normalizePath(`${folder.path}/${appendFilenameSuffix(name, `-${suffix++}`)}`);
+		return path;
+	}
+
+	async createSuggestedMarkdown(folder: TFolder, requestedName: string): Promise<TFile> {
+		const path = this.previewSuggestedMarkdownPath(folder, requestedName);
+		this.skipCreatedPaths.add(path);
+		let file: TFile;
+		try { file = await this.plugin.app.vault.create(path, ''); }
+		catch (error) { this.skipCreatedPaths.delete(path); throw error; }
+		if (this.isTemplateExcluded(folder)) return file;
+		const resolved = this.resolveRule(folder, TEMPLATE_FIELDS[0]!);
+		const values = ruleValues(resolved.rule);
+		if (!values) return file;
+		let templatePath = this.resolveTemplatePath(values.templatePath, resolved.folderOverrideMode, folder.path.split('/')[0]);
+		if (resolved.folderOverrideMode === true && !this.plugin.app.vault.getFileByPath(templatePath)) {
+			const legacy = this.legacyOverrideTemplatePath(values.templatePath);
+			if (this.plugin.app.vault.getFileByPath(legacy)) templatePath = legacy;
+		}
+		const template = this.plugin.app.vault.getFileByPath(templatePath);
+		if (template) await this.plugin.app.vault.modifyBinary(file, await this.plugin.app.vault.readBinary(template));
+		return file;
 	}
 
 	private resolveRule(folder: TFolder, field: TemplateField): { rule: TemplateRule; folderOverrideMode: boolean | null } {
@@ -229,6 +288,36 @@ export class FolderTemplateService {
 	private globalTemplateFolder(): string {
 		const values = this.plugin.vaultConfig?.values ?? {};
 		return sanitizeVaultPath(readManagedString(values, 'template-folder') ?? this.plugin.settings.templateFolder);
+	}
+
+	dateFormatForFolder(folder: TFolder | null): string {
+		return folder ? this.resolveDateFormat(folder) : this.globalDateFormat();
+	}
+
+	private resolveDateFormat(folder: TFolder): string {
+		const values = this.folderValues(folder);
+		const own = readManagedString(values, DATE_FORMAT_FIELD)?.trim() || legacyDateFromRules(values);
+		if (own) return own;
+		return folder.parent && !folder.parent.isRoot() ? this.resolveDateFormat(folder.parent) : this.globalDateFormat();
+	}
+
+	private globalDateFormat(): string {
+		const values = this.plugin.vaultConfig?.values ?? {};
+		return readManagedString(values, DATE_FORMAT_FIELD)?.trim() || legacyDateFromRules(values)
+			|| this.plugin.settings.templateDateFormat || 'DD.MM.YYYY';
+	}
+
+	private isTemplateExcluded(folder: TFolder): boolean {
+		let current: TFolder | null = folder;
+		while (current && !current.isRoot()) {
+			const excluded = readManagedStringArray(this.folderValues(current), EXCLUDED_SUBFOLDERS_FIELD);
+			if (excluded?.length) {
+				const relative = folder.path === current.path ? '' : folder.path.slice(current.path.length + 1);
+				if (relative && excluded.some(path => relative === path || relative.startsWith(`${path}/`))) return true;
+			}
+			current = current.parent;
+		}
+		return false;
 	}
 
 	private resolveTemplatePath(path: string, folderOverrideMode: boolean | null, bookId?: string): string {
@@ -276,17 +365,17 @@ export class FolderTemplateService {
 
 	private isConfigNote(file: TFile): boolean { return file.extension === 'md' && file.basename === this.plugin.settings.configFileBaseName; }
 
-	private prefixedPath(file: TFile, values: TemplateRuleValues): string {
+	private prefixedPath(file: TFile, values: TemplateRuleValues, dateFormat: string): string {
 		const date = this.now();
-		const dateToken = formatDate(date, values.dateFormat, false);
+		const dateToken = formatDatePattern(date, dateFormat, false);
 		const firstPrefix = sanitizeFilenamePart(values.prefix.replaceAll('{{date}}', dateToken));
 		const firstPath = siblingPath(file, `${firstPrefix}${file.name}`);
-		const dateOnlyCollision = values.prefix.includes('{{date}}') && values.dateFormat !== ''
-			&& !hasTimeTokens(values.dateFormat)
+		const dateOnlyCollision = values.prefix.includes('{{date}}') && dateFormat !== ''
+			&& !hasTimeTokens(dateFormat)
 			&& file.parent?.children.some(child => child !== file && child.name.startsWith(firstPrefix));
 		if (!dateOnlyCollision && isAvailablePath(this.plugin.app, file, firstPath)) return firstPath;
 
-		const timedToken = formatDate(date, values.dateFormat, true);
+		const timedToken = formatDatePattern(date, dateFormat, true);
 		const timedPrefix = sanitizeFilenamePart(values.prefix.replaceAll('{{date}}', timedToken));
 		const timedName = `${timedPrefix}${file.name}`;
 		let candidate = siblingPath(file, timedName);
@@ -320,6 +409,14 @@ function readManagedBoolean(values: Record<string, unknown>, key: string): boole
 	return undefined;
 }
 
+function readManagedStringArray(values: Record<string, unknown>, key: string): string[] | undefined {
+	for (const candidate of [`book-tabs-${key}`, key]) {
+		if (!Object.prototype.hasOwnProperty.call(values, candidate)) continue;
+		return Array.isArray(values[candidate]) ? sanitizeExcludedSubfolders(values[candidate] as unknown[]) : [];
+	}
+	return undefined;
+}
+
 function hasLegacyMarkdownValues(values: Record<string, unknown>): boolean {
 	return LEGACY_FIELDS.some(key => readManagedString(values, key) !== undefined);
 }
@@ -329,7 +426,6 @@ function mergeLegacyMarkdownRule(
 	values: Record<string, unknown>,
 ): { rule: TemplateRule; folderOverrideMode: boolean | null } {
 	const path = readManagedString(values, 'template-file-path');
-	const date = readManagedString(values, 'template-file-date');
 	const prefix = readManagedString(values, 'template-file-prefix');
 	const applied = readManagedString(values, 'template-file-applied-To') ?? readManagedString(values, 'template-file-applied-to');
 	if (applied !== undefined && !applied.split(/[\s,]+/).map(value => value.replace(/^\./, '').toLowerCase()).some(value => value === 'md' || value === '*')) {
@@ -339,7 +435,7 @@ function mergeLegacyMarkdownRule(
 	const templatePath = path ?? base?.templatePath ?? '';
 	if (!templatePath.toLowerCase().endsWith('.md')) return { rule: {}, folderOverrideMode: path !== undefined ? false : inherited.folderOverrideMode };
 	return {
-		rule: { [templatePath]: [date ?? base?.dateFormat ?? '', prefix ?? base?.prefix ?? '', true] },
+		rule: { [templatePath]: [prefix ?? base?.prefix ?? '', true] },
 		folderOverrideMode: path !== undefined ? false : inherited.folderOverrideMode,
 	};
 }
@@ -365,9 +461,10 @@ function normalizeRule(value: unknown, type: TemplateFileType): TemplateRule {
 	if (!entry) return {};
 	const path = sanitizeVaultPath(entry[0]);
 	const tuple = entry[1];
-	if (!path || !path.toLowerCase().endsWith(`.${type}`) || !Array.isArray(tuple)
-		|| typeof tuple[0] !== 'string' || typeof tuple[1] !== 'string' || typeof tuple[2] !== 'boolean') return {};
-	return { [path]: [tuple[0].trim(), tuple[1], tuple[2]] };
+	if (!path || !path.toLowerCase().endsWith(`.${type}`) || !Array.isArray(tuple)) return {};
+	if (typeof tuple[0] === 'string' && typeof tuple[1] === 'string' && typeof tuple[2] === 'boolean') return { [path]: [tuple[1], tuple[2]] };
+	if (typeof tuple[0] !== 'string' || typeof tuple[1] !== 'boolean') return {};
+	return { [path]: [tuple[0], tuple[1]] };
 }
 
 function validateRule(rule: TemplateRule, type: TemplateFileType): void {
@@ -380,16 +477,17 @@ function validateRule(rule: TemplateRule, type: TemplateFileType): void {
 
 export function makeTemplateRule(values: TemplateRuleValues, type: TemplateFileType): TemplateRule {
 	const path = sanitizeVaultPath(values.templatePath);
-	if (!path && !values.dateFormat && !values.prefix) return {};
+	if (!path && !values.prefix) return {};
 	if (!path || !path.toLowerCase().endsWith(`.${type}`)) throw new Error(`The ${type} template path must end in .${type}.`);
-	return { [path]: [values.dateFormat.trim(), values.prefix, values.applyFilenameConvention] };
+	return { [path]: [values.prefix, values.applyFilenameConvention] };
 }
 
 export function ruleValues(rule: TemplateRule): TemplateRuleValues | null {
 	const entry = Object.entries(rule)[0];
 	if (!entry) return null;
-	const tuple = entry[1];
-	return { templatePath: entry[0], dateFormat: tuple[0], prefix: tuple[1], applyFilenameConvention: tuple[2] };
+	const tuple = entry[1] as unknown as unknown[];
+	if (typeof tuple[1] === 'string') return { templatePath: entry[0], prefix: tuple[1], applyFilenameConvention: Boolean(tuple[2]) };
+	return { templatePath: entry[0], prefix: typeof tuple[0] === 'string' ? tuple[0] : '', applyFilenameConvention: tuple[1] === true };
 }
 
 function sanitizeVaultPath(value: string): string {
@@ -399,21 +497,20 @@ function sanitizeVaultPath(value: string): string {
 	return clean && !clean.split('/').some(segment => segment === '..' || segment === '.') ? clean : '';
 }
 
-function formatDate(date: Date, pattern: string, includeTime: boolean): string {
-	if (!pattern.trim()) return '';
-	const rendered = replaceDateTokens(pattern.trim(), date);
-	if (!includeTime || hasTimeTokens(pattern)) return rendered;
-	return `${rendered}_at_${replaceDateTokens('HH-mm', date)}`;
+function legacyDateFromRules(values: Record<string, unknown>): string | undefined {
+	for (const key of ['book-tabs-template-md', 'template-md', 'templateMd', 'book-tabs-template-canvas', 'template-canvas', 'templateCanvas', 'book-tabs-template-base', 'template-base', 'templateBase']) {
+		const rule = values[key];
+		if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue;
+		const tuple = Object.values(rule as Record<string, unknown>)[0];
+		if (Array.isArray(tuple) && typeof tuple[0] === 'string' && typeof tuple[1] === 'string' && tuple[0].trim()) return tuple[0].trim();
+	}
+	return readManagedString(values, 'template-file-date')?.trim() || undefined;
 }
 
-function hasTimeTokens(pattern: string): boolean { return /H{1,2}|h{1,2}|m{1,2}|s{1,2}/.test(pattern); }
-function replaceDateTokens(pattern: string, date: Date): string {
-	const values: Record<string, string> = {
-		YYYY: String(date.getFullYear()), YY: String(date.getFullYear()).slice(-2),
-		MM: String(date.getMonth() + 1).padStart(2, '0'), DD: String(date.getDate()).padStart(2, '0'),
-		HH: String(date.getHours()).padStart(2, '0'), mm: String(date.getMinutes()).padStart(2, '0'), ss: String(date.getSeconds()).padStart(2, '0'),
-	};
-	return pattern.replace(/YYYY|YY|MM|DD|HH|mm|ss/g, token => values[token] ?? token);
+function sanitizeExcludedSubfolders(values: unknown[]): string[] {
+	return [...new Set(values.filter((value): value is string => typeof value === 'string')
+		.map(value => sanitizeVaultPath(value).replace(/^\/+|\/+$/g, ''))
+		.filter(value => value.length > 0))];
 }
 function sanitizeFilenamePart(value: string): string { return value.replace(INVALID_FILENAME_CHARACTERS, '-'); }
 function siblingPath(file: TFile, name: string): string { return normalizePath(file.parent?.isRoot() ? name : `${file.parent?.path ?? ''}/${name}`); }

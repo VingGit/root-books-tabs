@@ -17,7 +17,7 @@ const TRANSFER_STRATEGIES: IndexTransferStrategy[] = ['merge-frontmatter', 'appe
 const LOCATION_OWNED_KEYS = new Set([
 	'fileOrder', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'creation-date',
 	'isFreshClone', 'freshCloneOpeningPath', 'tabInsertDirection', 'bookNoteOpenMode', 'openBooksInExternalWindows',
-	'createBookIndex', 'configNotePosition', 'orderingDirection',
+	'createBookIndex', 'orderingDirection',
 	'excludedBookFolders', 'forceUpdateLinks', 'template-folder', 'template-md', 'template-canvas', 'template-base',
 	'template-paths-under-global-folder', 'template-file-prefix', 'template-file-date', 'template-file-path',
 	'template-file-applied-To', 'template-file-applied-to',

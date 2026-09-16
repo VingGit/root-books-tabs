@@ -4,9 +4,9 @@ import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, migrateSettings } from './settings-model';
 import type { ScopeTabsSettings } from './types';
 
-const LOCAL_KEYS = new Set(['manualColors', 'manualTabTextColors', 'colorMode', 'selectedBookId', 'defaultStartupBookId', 'defaultStartupNotePath', 'bookNoteOpenModeOverrides', 'tabCustomCss', 'indexMoveDecision']);
-const ROOT_ONLY_KEYS = ['isFreshClone', 'freshCloneOpeningPath', 'createBookIndex'] as const;
-const OBSOLETE_ROOT_KEYS = ['showGridBoundaries', 'gridBoundaryThickness', 'hideNewBookIndex'] as const;
+const LOCAL_KEYS = new Set(['manualColors', 'manualTabTextColors', 'colorMode', 'selectedBookId', 'defaultStartupBookId', 'defaultStartupNotePath', 'bookNoteOpenModeOverrides', 'tabCustomCss', 'indexMoveDecision', 'frontmatterDisplayMode']);
+const ROOT_ONLY_KEYS = ['isFreshClone', 'freshCloneOpeningPath'] as const;
+const OBSOLETE_ROOT_KEYS = ['showGridBoundaries', 'gridBoundaryThickness', 'hideNewBookIndex', 'configNotePosition', 'createBookIndex'] as const;
 const LEGACY_TEMPLATE_ROOT_KEYS = ['template-file-prefix', 'template-file-date', 'template-file-path', 'template-file-applied-To', 'template-file-applied-to'] as const;
 const LEGACY_TEMPLATE_SETTING_ALIASES: Record<string, readonly string[]> = {
 	templateFilePrefix: ['template-file-prefix'],
@@ -16,6 +16,7 @@ const LEGACY_TEMPLATE_SETTING_ALIASES: Record<string, readonly string[]> = {
 };
 const ROOT_KEY_ALIASES: Record<string, readonly string[]> = {
 	templateFolder: ['template-folder'],
+	templateDateFormat: ['template-date-format'],
 	templateMd: ['template-md'],
 	templateCanvas: ['template-canvas'],
 	templateBase: ['template-base'],
@@ -46,6 +47,13 @@ export class VaultConfigService {
 		const file = existing ?? await vault.create('index.md', '');
 		const settings = this.plugin.settings;
 		await this.write(file, (fm, context) => {
+			fm.aliases = [vault.getName()];
+			// Folder order belongs to non-root config notes. Preserve plain user
+			// collisions, while removing any plugin-owned copies at the vault root.
+			for (const key of ['fileOrder', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'forcedOrderingDirection']) {
+				delete fm[prefixedConfigKey(key)];
+				if (context.ownedPlainKeys.has(key)) delete fm[key];
+			}
 			for (const key of OBSOLETE_ROOT_KEYS) {
 				delete fm[prefixedConfigKey(key)];
 				if (context.ownedPlainKeys.has(key)) delete fm[key];
@@ -55,7 +63,6 @@ export class VaultConfigService {
 				freshCloneOpeningPath: settings.defaultStartupNotePath || settings.defaultStartupBookId || '',
 				tabInsertDirection: settings.tabInsertDirection,
 				openBooksInExternalWindows: settings.openBooksInExternalWindows,
-				createBookIndex: true,
 			};
 			for (const [key, value] of Object.entries(settings)) {
 				if (!LOCAL_KEYS.has(key)) ensurePluginFrontmatter(fm, storageKey(key), value, context.ownedPlainKeys);
@@ -185,6 +192,19 @@ function logicalRootValues(raw: Record<string, unknown>): Record<string, unknown
 	const hasNewTemplateMd = ['templateMd', 'template-md', prefixedConfigKey('templateMd'), prefixedConfigKey('template-md')]
 		.some(key => Object.prototype.hasOwnProperty.call(raw, key));
 	if (hasLegacyTemplateSettings && !hasNewTemplateMd) values.templateMd = legacyRootTemplateRule(values);
+	const hasSharedDate = ['templateDateFormat', 'template-date-format', prefixedConfigKey('templateDateFormat'), prefixedConfigKey('template-date-format')]
+		.some(key => Object.prototype.hasOwnProperty.call(raw, key));
+	if (!hasSharedDate) {
+		if (typeof values.templateFileDate === 'string' && values.templateFileDate.trim()) values.templateDateFormat = values.templateFileDate.trim();
+		else for (const key of ['book-tabs-template-md', 'template-md', 'templateMd', 'book-tabs-template-canvas', 'template-canvas', 'templateCanvas', 'book-tabs-template-base', 'template-base', 'templateBase']) {
+			const rule = raw[key];
+			if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue;
+			const tuple = Object.values(rule as Record<string, unknown>)[0];
+			if (Array.isArray(tuple) && typeof tuple[0] === 'string' && typeof tuple[1] === 'string' && tuple[0].trim()) {
+				values.templateDateFormat = tuple[0].trim(); break;
+			}
+		}
+	}
 	const logicalKeys = new Set([...Object.keys(DEFAULT_SETTINGS).filter(key => !LOCAL_KEYS.has(key)), ...ROOT_ONLY_KEYS]);
 	for (const key of logicalKeys) {
 		const candidates = ROOT_KEY_ALIASES[key] ?? [key];
@@ -213,9 +233,8 @@ function legacyRootTemplateRule(values: Record<string, unknown>): ScopeTabsSetti
 	const rawPath = typeof values.templateFilePath === 'string' ? values.templateFilePath : 'templates/example.md';
 	const path = rawPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '').trim();
 	if (!path.toLowerCase().endsWith('.md')) return {};
-	const date = typeof values.templateFileDate === 'string' ? values.templateFileDate.trim() : 'DD.MM.YYYY';
 	const prefix = typeof values.templateFilePrefix === 'string' ? values.templateFilePrefix : '{{date}}_';
-	return { [path]: [date, prefix, true] };
+	return { [path]: [prefix, true] };
 }
 
 function storageKey(key: string): string {

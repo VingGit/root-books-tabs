@@ -3,6 +3,9 @@ import { isManualTabTextColor } from './colors';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
 import { makeTemplateRule, ruleValues, type FolderTemplateOverrides, type TemplateRuleValues } from './templates';
+import { compileArticleBlacklist, type ArticleMutationPlan, type ArticlePropertyKind, type ArticleNavigatorKeys } from './article-navigator';
+import { updateConfigFrontmatter, writePluginFrontmatter } from './config-frontmatter';
+import { isValidConfigTitleProperty } from './config-note-titles';
 import type { BookNoteOpenMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor, TemplateFileType, TemplateRule } from './types';
 
 function createTemplateDrawer(container: HTMLElement, open: boolean): { content: HTMLElement; setOpen: (value: boolean) => void } {
@@ -39,9 +42,11 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	getSettingDefinitions(): SettingDefinitionItem[] {
 		const groups: [string, (container: HTMLElement) => void][] = [
 			['Book mode', el => this.renderBookMode(el)], ['Navigation', el => this.renderNavigation(el)],
-			['Ordering', el => this.renderOrdering(el)],
+			['Global settings', el => this.renderOrdering(el)],
+			['Frontmatter display', el => this.renderFrontmatterDisplay(el)],
 			['Per book config', el => this.renderColors(el)], ['Decorations', el => this.renderDecorations(el)],
 			['Folder templates', el => this.renderTemplates(el)],
+			['Suggested plugins', el => this.renderSuggestedPlugins(el)],
 			['Hidden and excluded', el => this.renderHiddenAndExcluded(el)], ['Maintenance', el => this.renderMaintenance(el)],
 		];
 		return groups.map(([name, render]) => ({ type: 'group', heading: name, cls: 'scope-tabs-settings-section', items: [{ name, render: setting => {
@@ -57,8 +62,10 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		this.renderBookMode(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.renderNavigation(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.renderOrdering(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderFrontmatterDisplay(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.renderColors(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.renderTemplates(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
+		this.renderSuggestedPlugins(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.renderDecorations(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.renderMaintenance(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
 		this.renderHiddenAndExcluded(containerEl.createDiv({ cls: 'scope-tabs-settings-section' }));
@@ -225,10 +232,9 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	}
 
 	private renderOrdering(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName('Ordering').setHeading();
 		new Setting(containerEl)
 			.setName('Default ordering direction')
-			.setDesc('Descending keeps the newest items at the top for date sorting. The ordering-mode arrow changes this value.')
+			.setDesc('Descending keeps the newest items at the top for date sorting. A folder can override this with forcedOrderingDirection in its index note.')
 			.addDropdown(dropdown => dropdown
 				.addOptions({ descending: 'Descending', ascending: 'Ascending' })
 				.setValue(this.scopeTabs.settings.orderingDirection)
@@ -237,25 +243,20 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 					await this.scopeTabs.vaultConfig.set('orderingDirection', value);
 					this.scopeTabs.decorations.refresh();
 				}));
+	}
+
+	private renderFrontmatterDisplay(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName('Frontmatter display').setHeading();
 		new Setting(containerEl)
-			.setName('Config note position')
-			.setDesc('Keep each folder’s config note outside manual file order and pin it at the top or bottom.')
+			.setName('Properties in notes opened by root books tabs')
+			.setDesc('Inherit follows Obsidian’s “Properties in document” setting. The other choices apply only while this plugin has opened frontmatter.')
 			.addDropdown(dropdown => dropdown
-				.addOptions({ top: 'Top', bottom: 'Bottom' })
-				.setValue(this.scopeTabs.settings.configNotePosition)
+				.addOptions({ inherit: 'Inherit from Obsidian', visible: 'Visible', hidden: 'Hidden', source: 'Source' })
+				.setValue(this.scopeTabs.settings.frontmatterDisplayMode)
 				.onChange(async value => {
-					this.scopeTabs.settings.configNotePosition = value as typeof this.scopeTabs.settings.configNotePosition;
-					await this.scopeTabs.vaultConfig.set('configNotePosition', value);
-					this.scopeTabs.decorations.refresh();
+					this.scopeTabs.settings.frontmatterDisplayMode = value as typeof this.scopeTabs.settings.frontmatterDisplayMode;
+					await this.scopeTabs.saveSettings();
 				}));
-		if (this.scopeTabs.settings.indexMoveDecision !== 'ask') new Setting(containerEl)
-			.setName('Remembered config-note move action')
-			.setDesc('Clear the saved choice so the safety dialog appears again.')
-			.addButton(button => button.setButtonText('Forget choice').onClick(async () => {
-				this.scopeTabs.settings.indexMoveDecision = 'ask';
-				await this.scopeTabs.saveSettings();
-				this.update();
-			}));
 	}
 
 	private renderTemplates(containerEl: HTMLElement): void {
@@ -272,6 +273,13 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 			this.scopeTabs.settings.templateFolder = next;
 			await this.scopeTabs.vaultConfig.set('templateFolder', next);
 		}));
+		new Setting(containerEl).setName('Date format')
+			.setDesc('Shared by Markdown, Canvas, and Base filename conventions and by date ordering. The date may appear anywhere in a filename.')
+			.addText(text => text.setPlaceholder(DEFAULT_SETTINGS.templateDateFormat).setValue(this.scopeTabs.settings.templateDateFormat).onChange(async value => {
+				const next = value.trim() || DEFAULT_SETTINGS.templateDateFormat;
+				this.scopeTabs.settings.templateDateFormat = next;
+				await this.scopeTabs.vaultConfig.set('templateDateFormat', next);
+			}));
 		this.renderGlobalTemplateType(containerEl, 'Markdown', 'md', 'templateMd');
 		this.renderGlobalTemplateType(containerEl, 'Canvas', 'canvas', 'templateCanvas');
 		this.renderGlobalTemplateType(containerEl, 'Base', 'base', 'templateBase');
@@ -283,7 +291,7 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 	private renderGlobalTemplateType(containerEl: HTMLElement, label: string, type: TemplateFileType, key: 'templateMd' | 'templateCanvas' | 'templateBase'): void {
 		const current = ruleValues(this.scopeTabs.settings[key]);
 		const fallback = ruleValues(DEFAULT_SETTINGS[key])
-			?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
+			?? { templatePath: '', prefix: '', applyFilenameConvention: false };
 		const draft: TemplateRuleValues = { ...(current ?? fallback) };
 		let enabled = current !== null;
 		let pathInput: HTMLInputElement | null = null;
@@ -326,8 +334,6 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		validate();
 		new Setting(drawer.content).setName('Filename prefix').setDesc('Applied only when the filename convention switch is on. Use {{date}} to insert the formatted date.')
 			.addText(text => text.setValue(draft.prefix).onChange(async value => { draft.prefix = value; await save(); }));
-		new Setting(drawer.content).setName('Date format').setDesc('Used by {{date}}. A time suffix resolves date-only name collisions.')
-			.addText(text => text.setValue(draft.dateFormat).onChange(async value => { draft.dateFormat = value; await save(); }));
 		new Setting(drawer.content).setName('Apply filename convention').setDesc('When off, the template contents are still copied but the new filename is unchanged.')
 			.addToggle(toggle => toggle.setValue(draft.applyFilenameConvention).onChange(async value => { draft.applyFilenameConvention = value; await save(); }));
 	}
@@ -402,8 +408,8 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName('Per book config').setHeading();
 		const books = this.scopeTabs.scopeResolver.listBooks();
 		const missing = this.scopeTabs.colors.getMissingConfigBooks(books);
-		new Setting(containerEl).setName('Create a config note for new books')
-			.addToggle(toggle => toggle.setValue(this.scopeTabs.vaultConfig.values.createBookIndex !== false).onChange(value => this.scopeTabs.vaultConfig.set('createBookIndex', value)))
+		new Setting(containerEl).setName('Book config notes')
+			.setDesc('Every new book gets a folder note automatically. Create missing notes or add missing defaults to existing notes here.')
 			.addButton(button => button.setButtonText(missing.length ? 'Create missing' : 'Regenerate all').onClick(async () => {
 				await this.scopeTabs.colors.createConfigFiles(missing.length ? missing : books);
 				await this.scopeTabs.refreshColorConfiguration(false);
@@ -488,8 +494,160 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 		this.gridDimensionsSection?.toggleClass('is-hidden', gridHidden);
 	}
 
+	private renderSuggestedPlugins(containerEl: HTMLElement): void {
+		new Setting(containerEl).setName('Suggested plugins').setHeading();
+		const titleIntro = containerEl.createEl('p', { cls: 'setting-item-description' });
+		titleIntro.appendText('Property Over File Name makes hidden index notes identifiable in graph view, search, and the quick switcher. ');
+		titleIntro.createEl('a', { text: 'Open plugin page', href: 'https://community.obsidian.md/plugins/property-over-file-name' });
+		new Setting(containerEl).setName('Property Over File Name').setHeading();
+		new Setting(containerEl).setName('Keep config-note display titles synchronized')
+			.setDesc('Maintain the chosen title property on every vault, book, and subfolder config note so it matches its folder name.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.settings.indexTitleSync).onChange(async value => {
+				this.scopeTabs.settings.indexTitleSync = value;
+				await this.scopeTabs.vaultConfig.set('indexTitleSync', value);
+				if (value) await this.scopeTabs.configNoteTitles.reconcileAll(this.scopeTabs.settings.indexTitleProperty);
+			}));
+		new Setting(containerEl).setName('Follow the plugin display-title property')
+			.setDesc('On by default. If Property Over File Name changes its key, migrate maintained config titles to that key automatically.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.settings.indexTitleFollowPlugin).onChange(async value => {
+				this.scopeTabs.settings.indexTitleFollowPlugin = value;
+				await this.scopeTabs.vaultConfig.set('indexTitleFollowPlugin', value);
+			}));
+		let titleProperty = this.scopeTabs.settings.indexTitleProperty;
+		new Setting(containerEl).setName('Display-title property')
+			.setDesc('Changing this migrates the maintained field instead of adding a duplicate. Syncing the external plugin changes its vault-wide display key.')
+			.addText(text => text.setValue(titleProperty).onChange(value => { titleProperty = value.trim(); }))
+			.addButton(button => button.setButtonText('Apply and migrate').onClick(async () => {
+				if (!isValidConfigTitleProperty(titleProperty)) { new Notice('Use a separate display-title property. Folder aliases, creation dates, and ordering fields are reserved.'); return; }
+				const previous = this.scopeTabs.settings.indexTitleProperty;
+				this.scopeTabs.settings.indexTitleProperty = titleProperty;
+				await this.scopeTabs.vaultConfig.set('indexTitleProperty', titleProperty);
+				await this.scopeTabs.configNoteTitles.reconcileAll(titleProperty, previous);
+				if (this.scopeTabs.settings.indexTitleFollowPlugin) await this.scopeTabs.configNoteTitles.syncPropertyPlugin(titleProperty);
+				new Notice('Config-note display titles migrated.');
+			}))
+			.addButton(button => button.setButtonText('Sync plugin setting').onClick(async () => {
+				const result = await this.scopeTabs.configNoteTitles.syncPropertyPlugin(titleProperty);
+				if (result.state === 'synced') new Notice(result.refreshFailures.length ? 'Plugin setting saved; some plugin views could not refresh.' : 'Property Over File Name now uses this property.');
+				else if (result.state === 'not-enabled') new Notice('Property Over File Name is not enabled.');
+				else new Notice(result.reason);
+			}));
+		const propertyStatus = this.scopeTabs.configNoteTitles.propertyPluginStatus();
+		containerEl.createEl('p', { cls: 'setting-item-description', text: propertyStatus.state === 'connected'
+			? `Connected${propertyStatus.version ? ` (version ${propertyStatus.version})` : ''}; current plugin key: ${propertyStatus.propertyKey}.`
+			: propertyStatus.state === 'incompatible' ? `Installed plugin could not be connected: ${propertyStatus.reason}` : 'Property Over File Name is not currently enabled.' });
+
+		const articleIntro = containerEl.createEl('p', { cls: 'setting-item-description' });
+		articleIntro.appendText('Article Navigator adds previous, next, and related-note properties for diaries, tutorials, and other sequences. ');
+		articleIntro.createEl('a', { text: 'Open plugin page', href: 'https://community.obsidian.md/plugins/article-navigator' });
+		new Setting(containerEl).setName('Article Navigator').setHeading();
+		new Setting(containerEl).setName('Follow Article Navigator property names')
+			.setDesc('When the plugin is enabled, read its three property names immediately before an operation. Stored names remain the fallback.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.settings.articleNavigatorFollowPluginKeys).onChange(async value => {
+				this.scopeTabs.settings.articleNavigatorFollowPluginKeys = value;
+				await this.scopeTabs.vaultConfig.set('articleNavigatorFollowPluginKeys', value);
+				this.update();
+			}));
+		const resolved = this.articleKeys();
+		containerEl.createEl('p', { cls: 'setting-item-description', text: resolved.source === 'article-navigator'
+			? 'Using property names from the enabled Article Navigator plugin.' : 'Using the property names stored by Root Books Tabs.' });
+		const rows: { label: string; kind: ArticlePropertyKind; setting: 'articleNavigatorPreviousProperty' | 'articleNavigatorNextProperty' | 'articleNavigatorSeeAlsoProperty' }[] = [
+			{ label: 'Previous article', kind: 'previous', setting: 'articleNavigatorPreviousProperty' },
+			{ label: 'Next article', kind: 'next', setting: 'articleNavigatorNextProperty' },
+			{ label: 'See also', kind: 'see-also', setting: 'articleNavigatorSeeAlsoProperty' },
+		];
+		for (const row of rows) new Setting(containerEl).setName(row.label)
+			.setDesc('Generate this missing property across the vault or one selected folder without replacing existing values.')
+			.addText(text => text.setValue(this.scopeTabs.settings[row.setting]).onChange(async value => {
+				const next = value.trim(); if (!next) return;
+				this.scopeTabs.settings[row.setting] = next;
+				await this.scopeTabs.vaultConfig.set(row.setting, next);
+			}))
+			.addButton(button => button.setButtonText('Generate in vault').onClick(() => void this.generateArticleProperties(row.kind)))
+			.addButton(button => button.setButtonText('Choose folder').onClick(() => new FolderActionModal(this.app, 'Generate properties in folder', folder => this.generateArticleProperties(row.kind, folder.path)).open()));
+		new Setting(containerEl).setName('Prefer dates in filenames')
+			.setDesc('Use the effective folder date format first when building Previous and Next order, then creation-date frontmatter, then filename.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.settings.articleNavigatorPreferFilenameDates).onChange(async value => {
+				this.scopeTabs.settings.articleNavigatorPreferFilenameDates = value;
+				await this.scopeTabs.vaultConfig.set('articleNavigatorPreferFilenameDates', value);
+			}));
+		new Setting(containerEl).setName('Populate Previous and Next')
+			.setDesc('Build a complete preview first. Existing nonempty links appear in a warning before anything is replaced.')
+			.addButton(button => button.setButtonText('Populate vault').onClick(() => void this.populateArticleNavigation()))
+			.addButton(button => button.setButtonText('Choose folder').onClick(() => new FolderActionModal(this.app, 'Populate navigation in folder', folder => this.populateArticleNavigation(folder.path)).open()));
+		new Setting(containerEl).setName('Generation and population blacklist')
+			.setDesc('One exact vault path, folder path, /regular expression/flags, or regex:pattern per line. Manual property edits remain allowed.')
+			.addTextArea(text => text.setValue(this.scopeTabs.settings.articleNavigatorBlacklist).onChange(async value => {
+				this.scopeTabs.settings.articleNavigatorBlacklist = value;
+				await this.scopeTabs.vaultConfig.set('articleNavigatorBlacklist', value);
+			}));
+		new Setting(containerEl).setName('Restore missing article suggestions')
+			.setDesc('The X on a suggestion hides that direction for its folder. Select a folder here to show its suggestions again.')
+			.addButton(button => button.setButtonText('Previous suggestions').onClick(() => new FolderActionModal(this.app, 'Restore previous suggestions in folder', folder => this.restoreArticleSuggestions(folder, 'previous')).open()))
+			.addButton(button => button.setButtonText('Next suggestions').onClick(() => new FolderActionModal(this.app, 'Restore next suggestions in folder', folder => this.restoreArticleSuggestions(folder, 'next')).open()));
+	}
+
+	private async restoreArticleSuggestions(folder: TFolder, direction: 'previous' | 'next'): Promise<void> {
+		const config = await this.scopeTabs.bookOrder.ensureConfig(folder);
+		await updateConfigFrontmatter(this.app, config, (frontmatter, context) => {
+			writePluginFrontmatter(frontmatter, `article-placeholder-hidden-${direction}`, false, context.ownedPlainKeys);
+		});
+		this.scopeTabs.decorations.refresh();
+		new Notice(`Restored ${direction} article suggestions in ${folder.path}.`);
+	}
+
+	private articleKeys(): { keys: ArticleNavigatorKeys; source: 'stored' | 'article-navigator' } {
+		return this.scopeTabs.articleNavigator.resolveKeys({
+			previousKey: this.scopeTabs.settings.articleNavigatorPreviousProperty,
+			nextKey: this.scopeTabs.settings.articleNavigatorNextProperty,
+			seeAlsoKey: this.scopeTabs.settings.articleNavigatorSeeAlsoProperty,
+		}, this.scopeTabs.settings.articleNavigatorFollowPluginKeys);
+	}
+
+	private async generateArticleProperties(kind: ArticlePropertyKind, folderPath?: string): Promise<void> {
+		const blacklist = compileArticleBlacklist(this.scopeTabs.settings.articleNavigatorBlacklist);
+		if (blacklist.invalidPatterns.length) { new Notice(`Fix invalid blacklist patterns: ${blacklist.invalidPatterns.join(', ')}`); return; }
+		const plan = this.scopeTabs.articleNavigator.planGenerateMissing(this.articleKeys().keys, { folderPath, blacklist });
+		plan.files = plan.files.map(entry => ({ ...entry, changes: entry.changes.filter(change => change.kind === kind) })).filter(entry => entry.changes.length > 0);
+		const result = await this.scopeTabs.articleNavigator.apply(plan);
+		new Notice(`Added ${result.propertiesWritten} ${kind.replace('-', ' ')} propert${result.propertiesWritten === 1 ? 'y' : 'ies'}.`);
+	}
+
+	private async populateArticleNavigation(folderPath?: string): Promise<void> {
+		await this.scopeTabs.bookOrder.refreshCreationDates();
+		const blacklist = compileArticleBlacklist(this.scopeTabs.settings.articleNavigatorBlacklist);
+		if (blacklist.invalidPatterns.length) { new Notice(`Fix invalid blacklist patterns: ${blacklist.invalidPatterns.join(', ')}`); return; }
+		const files = this.app.vault.getMarkdownFiles().filter(file => !folderPath || file.path.startsWith(`${folderPath}/`));
+		const prefer = this.scopeTabs.settings.articleNavigatorPreferFilenameDates;
+		files.sort((left, right) => {
+			const a = this.scopeTabs.bookOrder.dateOrderingValue(left, prefer), b = this.scopeTabs.bookOrder.dateOrderingValue(right, prefer);
+			if (a !== null && b !== null && a !== b) return a - b;
+			if (a !== null && b === null) return -1;
+			if (a === null && b !== null) return 1;
+			return left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' });
+		});
+		const keys = this.articleKeys().keys;
+		const replan = (): ArticleMutationPlan => this.scopeTabs.articleNavigator.planPopulation(files, keys,
+			{ blacklist: compileArticleBlacklist(this.scopeTabs.settings.articleNavigatorBlacklist) });
+		const plan = replan();
+		if (plan.conflicts.length) {
+			new ArticleConflictModal(this.app, this.scopeTabs, plan, replan).open();
+			return;
+		}
+		const result = await this.scopeTabs.articleNavigator.apply(plan);
+		new Notice(`Updated ${result.propertiesWritten} Previous or Next properties.`);
+	}
+
 	private renderMaintenance(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Maintenance').setHeading();
+		if (this.scopeTabs.settings.indexMoveDecision !== 'ask') new Setting(containerEl)
+			.setName('Remembered config-note move action')
+			.setDesc('Clear the saved choice so the safety dialog appears again.')
+			.addButton(button => button.setButtonText('Forget choice').onClick(async () => {
+				this.scopeTabs.settings.indexMoveDecision = 'ask';
+				await this.scopeTabs.saveSettings();
+				this.update();
+			}));
 		new Setting(containerEl)
 			.setName('Reset settings')
 			.setDesc('Restore all root books tabs settings to defaults. Runtime group ownership is retained.')
@@ -562,6 +720,53 @@ class ExcludedFolderModal extends FuzzySuggestModal<TFolder> {
 	}
 }
 
+class FolderActionModal extends FuzzySuggestModal<TFolder> {
+	constructor(app: App, placeholder: string, private readonly action: (folder: TFolder) => Promise<void>) {
+		super(app); this.setPlaceholder(placeholder);
+	}
+	getItems(): TFolder[] {
+		return this.app.vault.getAllLoadedFiles().filter((entry): entry is TFolder => entry instanceof TFolder && !entry.isRoot())
+			.sort((left, right) => left.path.localeCompare(right.path, undefined, { numeric: true, sensitivity: 'base' }));
+	}
+	getItemText(folder: TFolder): string { return folder.path; }
+	onChooseItem(folder: TFolder): void {
+		void this.action(folder).catch((error: unknown) => { console.error(error); new Notice('Could not complete the folder operation.'); });
+	}
+}
+
+class ArticleConflictModal extends Modal {
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin, private plan: ArticleMutationPlan,
+		private readonly replan: () => ArticleMutationPlan) { super(app); }
+	onOpen(): void { this.render(); }
+	private render(): void {
+		this.contentEl.empty();
+		this.titleEl.setText('Review navigation replacements');
+		this.contentEl.createEl('p', { text: `${this.plan.conflicts.length} existing Previous or Next value${this.plan.conflicts.length === 1 ? '' : 's'} would be replaced. Review them before applying.` });
+		const conflicts = this.contentEl.createDiv({ cls: 'scope-tabs-article-conflicts' });
+		for (const conflict of this.plan.conflicts) new Setting(conflicts)
+			.setName(`${conflict.file.path} · ${conflict.key}`)
+			.setDesc(`${String(conflict.before)} → ${conflict.after || '(empty)'}`)
+			.addButton(button => button.setButtonText('Exclude file').onClick(() => void this.exclude(conflict.file.path)))
+			.addButton(button => button.setButtonText('Exclude folder').onClick(() => void this.exclude(conflict.file.parent?.path ?? conflict.file.path)));
+		const buttons = this.contentEl.createDiv({ cls: 'scope-tabs-modal-buttons' });
+		buttons.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+		buttons.createEl('button', { text: 'Apply replacements', cls: 'mod-warning' }).addEventListener('click', () => void this.apply());
+	}
+	private async exclude(path: string): Promise<void> {
+		const lines = this.plugin.settings.articleNavigatorBlacklist.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+		if (!lines.includes(path)) lines.push(path);
+		this.plugin.settings.articleNavigatorBlacklist = lines.join('\n');
+		await this.plugin.vaultConfig.set('articleNavigatorBlacklist', this.plugin.settings.articleNavigatorBlacklist);
+		this.plan = this.replan();
+		this.render();
+	}
+	private async apply(): Promise<void> {
+		const result = await this.plugin.articleNavigator.apply(this.plan);
+		new Notice(`Updated ${result.propertiesWritten} Previous or Next properties.`);
+		this.close();
+	}
+}
+
 class FolderTemplateOverridesModal extends Modal {
 	private selectedPath = '';
 	constructor(app: App, private readonly plugin: ScopeTabsPlugin) { super(app); }
@@ -597,6 +802,8 @@ class FolderTemplateOverridesModal extends Modal {
 			: this.plugin.templates.resolveForFolder(folder);
 		const draft: FolderTemplateOverrides = { ...existing };
 		let pathsUnderGlobal = existing.templatePathsUnderGlobalFolder ?? true;
+		let dateFormat = existing.templateDateFormat ?? '';
+		let excludedSubfolders = existing.templateExcludedSubfolders?.join(', ') ?? '';
 		const previewRefreshers: (() => void)[] = [];
 		const validityChecks: (() => boolean)[] = [];
 		let saveButton: HTMLButtonElement | null = null;
@@ -608,6 +815,18 @@ class FolderTemplateOverridesModal extends Modal {
 				draft.templatePathsUnderGlobalFolder = value;
 				previewRefreshers.forEach(refresh => refresh());
 			}));
+		new Setting(this.contentEl).setName('Date format')
+			.setDesc(`Leave empty to inherit ${inherited.templateDateFormat || DEFAULT_SETTINGS.templateDateFormat}. Used by every file type and date ordering.`)
+			.addText(text => text.setPlaceholder(inherited.templateDateFormat).setValue(dateFormat).onChange(value => {
+				dateFormat = value.trim();
+				draft.templateDateFormat = dateFormat || undefined;
+			}));
+		new Setting(this.contentEl).setName('Excluded subfolders')
+			.setDesc('Comma-separated paths relative to this folder. Notes below them skip both template contents and filename prefixes.')
+			.addText(text => text.setPlaceholder('archive, attachments/imported').setValue(excludedSubfolders).onChange(value => {
+				excludedSubfolders = value;
+				draft.templateExcludedSubfolders = value.split(',').map(path => path.trim()).filter(Boolean);
+			}));
 		this.addTemplateOverrideType('Markdown', 'md', 'templateMd', folder, existing, inherited.templateMd, draft, () => pathsUnderGlobal, previewRefreshers, validityChecks, updateSaveState);
 		this.addTemplateOverrideType('Canvas', 'canvas', 'templateCanvas', folder, existing, inherited.templateCanvas, draft, () => pathsUnderGlobal, previewRefreshers, validityChecks, updateSaveState);
 		this.addTemplateOverrideType('Base', 'base', 'templateBase', folder, existing, inherited.templateBase, draft, () => pathsUnderGlobal, previewRefreshers, validityChecks, updateSaveState);
@@ -618,6 +837,8 @@ class FolderTemplateOverridesModal extends Modal {
 				try {
 					if (validityChecks.some(check => !check())) return;
 					draft.templatePathsUnderGlobalFolder = pathsUnderGlobal;
+					draft.templateDateFormat = dateFormat || undefined;
+					draft.templateExcludedSubfolders = excludedSubfolders.split(',').map(path => path.trim()).filter(Boolean);
 					await this.plugin.templates.writeFolderOverrides(folder, draft);
 					new Notice('Template overrides saved. Missing template files were created.');
 					this.render();
@@ -651,11 +872,11 @@ class FolderTemplateOverridesModal extends Modal {
 		updateSaveState: () => void,
 	): void {
 		let enabled = existing[key] !== undefined;
-		const inherited = ruleValues(inheritedRule) ?? { templatePath: '', dateFormat: '', prefix: '', applyFilenameConvention: false };
+		const inherited = ruleValues(inheritedRule) ?? { templatePath: '', prefix: '', applyFilenameConvention: false };
 		const values = ruleValues(existing[key] ?? inheritedRule) ?? { ...inherited, templatePath: '' };
 		const updateRule = (): void => {
 			draft[key] = enabled
-				? values.templatePath ? { [values.templatePath]: [values.dateFormat, values.prefix, values.applyFilenameConvention] } : {}
+				? values.templatePath ? { [values.templatePath]: [values.prefix, values.applyFilenameConvention] } : {}
 				: undefined;
 		};
 		let setDrawerOpen = (_value: boolean): void => {};
@@ -712,9 +933,6 @@ class FolderTemplateOverridesModal extends Modal {
 		refreshPreview();
 		new Setting(drawer.content).setName('Filename prefix').setDesc(`Inherited: ${inherited.prefix || 'empty'}`).addText(text => {
 			text.setPlaceholder(inherited.prefix).setValue(values.prefix).onChange(value => { values.prefix = value; updateRule(); });
-		});
-		new Setting(drawer.content).setName('Date format').setDesc(`Inherited: ${inherited.dateFormat || 'empty'}`).addText(text => {
-			text.setPlaceholder(inherited.dateFormat).setValue(values.dateFormat).onChange(value => { values.dateFormat = value; updateRule(); });
 		});
 		new Setting(drawer.content).setName('Apply filename convention').setDesc(`Inherited: ${inherited.applyFilenameConvention ? 'on' : 'off'}`).addToggle(toggle => {
 			toggle.setValue(values.applyFilenameConvention).onChange(value => { values.applyFilenameConvention = value; updateRule(); });
@@ -801,9 +1019,7 @@ export class CreateBookModal extends Modal {
 					this.close();
 					return;
 				}
-				if (this.plugin.vaultConfig.values.createBookIndex !== false) {
-					await this.plugin.bookOrder.ensureConfig(folder);
-				}
+				await this.plugin.bookOrder.ensureConfig(folder);
 				this.plugin.settings.selectedBookId = folder.path;
 				await this.plugin.saveSettings();
 				this.plugin.decorations.refresh(); this.close();

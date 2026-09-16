@@ -10,10 +10,10 @@ export type BookNoteOpenMode = 'same-tab' | 'background-tab' | 'focused-tab';
 export type FileExplorerOpenBehavior = 'book-instance' | 'current-group';
 export type ExcludedFileGroupLocation = 'next-to-current' | 'popout';
 export type OrderingDirection = 'ascending' | 'descending';
-export type ConfigNotePosition = 'top' | 'bottom';
+export type FrontmatterDisplayMode = 'inherit' | 'visible' | 'hidden' | 'source';
 export type IndexMoveDecision = 'ask' | 'block' | 'merge-frontmatter' | 'append-body' | 'replace-frontmatter' | 'replace-content' | 'swap';
 export type TemplateFileType = 'md' | 'canvas' | 'base';
-export type TemplateRuleTuple = [dateFormat: string, prefix: string, applyFilenameConvention: boolean];
+export type TemplateRuleTuple = [prefix: string, applyFilenameConvention: boolean];
 export type TemplateRule = Record<string, TemplateRuleTuple>;
 
 export interface ScopeTabsSettings {
@@ -42,19 +42,29 @@ export interface ScopeTabsSettings {
 	gridRows: number;
 	gridColumns: number;
 	orderingDirection: OrderingDirection;
-	configNotePosition: ConfigNotePosition;
 	indexMoveDecision: IndexMoveDecision;
 	excludedBookFolders: string[];
 	excludedFileGroupLocation: ExcludedFileGroupLocation;
 	templateFolder: string;
+	templateDateFormat: string;
 	templateMd: TemplateRule;
 	templateCanvas: TemplateRule;
 	templateBase: TemplateRule;
 	forceUpdateLinks: boolean;
 	tabInsertDirection: TabInsertDirection;
 	bookNoteOpenMode: BookNoteOpenMode;
+	frontmatterDisplayMode: FrontmatterDisplayMode;
 	bookNoteOpenModeOverrides: Record<string, BookNoteOpenMode>;
 	openBooksInExternalWindows: boolean;
+	indexTitleSync: boolean;
+	indexTitleFollowPlugin: boolean;
+	indexTitleProperty: string;
+	articleNavigatorPreviousProperty: string;
+	articleNavigatorNextProperty: string;
+	articleNavigatorSeeAlsoProperty: string;
+	articleNavigatorFollowPluginKeys: boolean;
+	articleNavigatorBlacklist: string;
+	articleNavigatorPreferFilenameDates: boolean;
 }
 
 export interface BookScope {

@@ -42,9 +42,21 @@ export class FrontmatterActions {
 	private async show(leaf: WorkspaceLeaf): Promise<void> {
 		if (!(leaf.view instanceof MarkdownView) || !leaf.view.file) return;
 		if (!this.shown.has(leaf)) this.shown.set(leaf, structuredClone(leaf.getViewState()));
+		const configured = this.plugin.settings.frontmatterDisplayMode;
+		const inherited = configured === 'inherit' ? this.obsidianDisplayMode() : configured;
+		leaf.view.containerEl.removeClasses(['scope-tabs-frontmatter-visible', 'scope-tabs-frontmatter-hidden', 'scope-tabs-frontmatter-source']);
+		leaf.view.containerEl.addClass(`scope-tabs-frontmatter-${inherited}`);
 		const state = leaf.getViewState();
-		await leaf.setViewState({ ...state, state: { ...state.state, mode: 'source', source: true } });
-		if (leaf.view instanceof MarkdownView) leaf.view.editor.setCursor({ line: 0, ch: 0 });
+		if (inherited === 'source') {
+			await leaf.setViewState({ ...state, state: { ...state.state, mode: 'source', source: true } });
+			if (leaf.view instanceof MarkdownView) leaf.view.editor.setCursor({ line: 0, ch: 0 });
+		}
+	}
+
+	private obsidianDisplayMode(): 'visible' | 'hidden' | 'source' {
+		const vault = this.plugin.app.vault as typeof this.plugin.app.vault & { getConfig?: (key: string) => unknown };
+		const value = vault.getConfig?.('propertiesInDocument');
+		return value === 'hidden' || value === 'source' ? value : 'visible';
 	}
 
 	async openVaultConfig(sourceLeaf?: WorkspaceLeaf): Promise<void> {
@@ -63,6 +75,7 @@ export class FrontmatterActions {
 	async hide(): Promise<void> {
 		const root = this.rootLeaf; this.rootLeaf = null;
 		for (const [leaf, state] of this.shown) {
+			leaf.view.containerEl.removeClasses(['scope-tabs-frontmatter-visible', 'scope-tabs-frontmatter-hidden', 'scope-tabs-frontmatter-source']);
 			if (leaf === root || !leaf.view.containerEl.isConnected) continue;
 			if (leaf.getViewState().state?.file === state.state?.file) await leaf.setViewState(state);
 		}

@@ -247,6 +247,10 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 	text-decoration-color: currentColor;
 }
 
+.workspace-leaf-content[data-type='file-explorer'] .scope-tabs-folder-note-existing {
+	text-decoration-color: currentColor;
+}
+
 .scope-tabs-book-switcher.scope-tabs-book-switcher-colored {
 	border-color: color-mix(in srgb, var(--scope-tabs-book-color) 66%, var(--background-modifier-border));
 	color: var(--scope-tabs-book-color);
@@ -274,6 +278,15 @@ body .workspace-tabs.scope-tabs-book-drop-down {
 	color: var(--text-normal);
 	font-weight: var(--font-semibold);
 	text-align: left;
+}
+.scope-tabs-book-rename-input {
+	width: 100%;
+	min-width: 0;
+	border: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: inherit;
 }
 
 .scope-tabs-book-subtree-close-button {
@@ -893,17 +906,52 @@ input.scope-tabs-invalid-template-path:focus {
 .scope-tabs-ordering [data-scope-tabs-order-drop="before"]::after { top: -1px; }
 .scope-tabs-ordering [data-scope-tabs-order-drop="after"]::after { bottom: -1px; }
 .scope-tabs-ordering [data-scope-tabs-order-drop="inside"] { outline: 2px solid var(--scope-tabs-order-color); outline-offset: -2px; }
+.scope-tabs-order-direction-override {
+	margin-left: auto;
+	padding-left: var(--size-4-2);
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
 .scope-tabs-settings-section {
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 8px;
 	padding: 12px 16px;
 	margin-bottom: 18px;
 }
+.scope-tabs-frontmatter-hidden .metadata-container { display: none !important; }
+.scope-tabs-frontmatter-visible .metadata-container { display: block !important; }
+.scope-tabs-article-placeholders {
+	display: grid;
+	gap: var(--size-4-2);
+	padding: var(--size-4-2) var(--size-4-4);
+}
+.scope-tabs-article-placeholder {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--size-4-2);
+	border: 1px dotted var(--text-faint);
+	border-radius: var(--radius-s);
+	padding: var(--size-4-2);
+	color: var(--text-muted);
+	background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
+}
+.scope-tabs-article-placeholder-close { order: 4; margin-left: auto; }
+.scope-tabs-article-placeholder-input { min-width: 8rem; flex: 1 1 10rem; }
+.scope-tabs-article-placeholder-preview { font-size: var(--font-ui-smaller); color: var(--text-faint); overflow-wrap: anywhere; flex: 1 1 12rem; }
+.scope-tabs-article-conflicts { max-height: 50vh; overflow-y: auto; }
 .scope-tabs-empty-book {
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
 	padding: 12px;
+}
+.workspace-leaf-content[data-type='file-explorer'].scope-tabs-book-mode .scope-tabs-book-empty-secondary > .nav-folder-children,
+.workspace-leaf-content[data-type='file-explorer'].scope-tabs-book-mode .scope-tabs-book-empty-primary > .nav-folder-children {
+	display: none;
+}
+.workspace-leaf-content[data-type='file-explorer'].scope-tabs-book-mode .scope-tabs-book-empty-secondary.is-collapsed > .scope-tabs-empty-book {
+	display: none;
 }
 .scope-tabs-overrides-box {
 	border: 1px solid var(--background-modifier-border);
