@@ -6,7 +6,7 @@ In the spirit of root-index-panels, **every first-level folder in the vault is t
 
 If a vault does not contain at least two first-level folders, Root Books Tabs does nothing to navigation.
 
-> **Status:** `0.1.3` is the current development build. The routing core uses Obsidian workspace APIs; a few visual compatibility features necessarily touch Obsidian's DOM or tab-group internals and are isolated so they can be repaired without changing the scope/navigation model.
+> **Status:** `0.1.8` is the current development build. The routing core uses Obsidian workspace APIs; a few visual compatibility features necessarily touch Obsidian's DOM or tab-group internals and are isolated so they can be repaired without changing the scope/navigation model.
 
 ## Core model
 
@@ -102,8 +102,9 @@ Example:
 
 ```yaml
 ---
-color: "#69b7ff"
-tab-text-bg: black
+book-tabs:
+  color: "#69b7ff"
+  tab-text-bg: black
 ---
 ```
 
@@ -111,7 +112,7 @@ tab-text-bg: black
 
 The filename is entered in settings **without `.md`**.
 
-When a config note exists but the configured color property is missing or invalid, Root Books Tabs uses its local automatic color. Explicit overrides use `FileManager.processFrontMatter()` and preserve unrelated properties. Every managed field also accepts a `book-tabs-` prefix. A prefixed value wins; when an existing plain field would collide, Root Books Tabs preserves it and writes its own value under the prefixed name, such as `book-tabs-color`.
+When a config note exists but the configured color property is missing or invalid, Root Books Tabs uses its local automatic color. Explicit overrides use `FileManager.processFrontMatter()` and preserve unrelated properties. Plugin settings and color overrides are written inside the dedicated `book-tabs:` mapping. Section values win over readable legacy `book-tabs-` aliases; migration removes plugin-owned legacy duplicates while preserving unrelated top-level properties.
 
 Every new book receives its config note automatically. The **Book config notes** action creates missing notes or regenerates missing defaults without replacing unrelated frontmatter or note bodies. A separate toggle controls missing-config notifications.
 
@@ -270,9 +271,13 @@ After every successful build matrix on `main`, GitHub Actions validates the vers
 
 Vault-wide options are stored in the vault root `index.md` frontmatter. Existing properties and note content are preserved. `freshCloneOpeningPath` accepts a Markdown note or first-level book folder; `isFreshClone: true` applies it once and then resets to false. A book uses its config note, newest note, or a newly created config note in that order. An invalid path preserves restored workspace state; without saved state, the newest note is used.
 
-The explorer's aligned reorder button prepares a `fileOrder` array in every non-root folder config note. Each array contains exact immediate-child names, including folders, images, Canvas, Bases, PDFs and other visible file types, except the hidden config note itself. Missing names are inserted alphabetically and stale names are removed without changing the relative order of surviving manual entries. The root `index.md` never receives `fileOrder`. Config notes belong to their clickable folder titles and have no separate position setting.
+Plugin settings live in a dedicated `book-tabs:` YAML mapping: globally in the root `index.md`, and locally in folder config notes. A section manager migrates comment-owned legacy properties and `book-tabs-` aliases, preserves unrelated fields, and writes settings in a uniform order. Existing section values win. Shared note metadata (`creation-date`, folder aliases and display titles, PreviousArticle, NextArticle, SeeAlso) stays at the top level for companion-plugin compatibility. Delete the mapping to remove plugin settings from a note; pause automatic regeneration when reviewing configuration from scratch.
 
-The highlight includes the controls and ends above the book launcher. Its main button cycles manual, alphabetical, creation date, and properties without a dropdown; the attached arrow changes the vault-wide ascending/descending direction. **Global settings** contains this default direction, initially descending. A folder can permanently override it with `forcedOrderingDirection: ascending` or `descending` in its config frontmatter; `false` inherits. An exact folder override appears in grey next to its title during ordering. Date sorting finds a valid substring matching the effective `template-date-format` anywhere in the filename, then uses `creation-date` frontmatter, then the filename. Markdown creation dates are maintained from filesystem creation timestamps. Properties sorting follows the configured Previous/Next links, falling back to dates and names for disconnected entries, and reverses the same sequence with direction. Switching display sort does not rewrite `fileOrder`; dragging does. Drag near an item's top/bottom to place before/after it, or onto a folder's middle to move inside it. A dragged folder temporarily collapses, its descendants are not targets, and drop lines align to the destination depth. Ordinary same-name collisions swap files. Config-note moves are guarded and offer safe blocking or an explicit data transfer between fixed paths. The dimmed workspace is inert. Folders expand on entry, native collapse arrows still work, and prior folder states return on exit. Escape, the red X, or the dimmed area exits. Usage instructions are YAML `#` comments and survive writes.
+The explorer sort button offers alphabetical, creation date, and properties. Manual file ordering, drag-order mode and `fileOrder` are retired; legacy plugin-owned copies are removed during migration. The adjacent direction button changes the global ascending/descending default, initially descending. A folder’s `book-tabs.forcedOrderingType` and `book-tabs.forcedOrderingDirection` override its inherited order and direction; `false` inherits. Properties sorting follows explicit Previous/Next links only between immediate children of the same folder. Links leaving the folder do not form ordering edges. Disconnected chains and missing links use valid configured date substrings in filenames, then creation-date frontmatter, then filesystem creation time, then alphabetical names. Descending reverses that same sequence. Config-note transfer protection and whole-book/tab reordering remain independent.
+
+Missing Previous/Next creation suggestions use Article Navigator’s default inline layout: two cards beneath the note, 16px apart, with 8px corners and Next aligned right. Suggestions show the final template-aware path, create reciprocal article links, and follow the book’s note-opening rules. Each X hides that suggestion for its folder.
+
+Maintenance places selected-field regeneration and destructive frontmatter deletion beside each other. Regeneration restores only the chosen global setting or shared metadata field. Deletion previews the affected Markdown notes, backs up original content inside the vault’s plugin folder, preserves note bodies, and pauses automatic regeneration. Companion plugins can still maintain their own metadata. Keep regeneration paused during a setting-by-setting audit.
 
 Hidden paths are managed through `.obsidianignore`; install the [Ignore plugin](https://community.obsidian.md/plugins/ignore) for vault-wide exclusion. The picker displays `./` paths and writes compatible root-anchored `/` patterns, escaped for literal filenames. Session reveal leaves the ignore file unchanged. The separate excluded-folder list removes selected first-level folders from the book system and automatic config generation. New books automatically receive config notes; config notes are hidden by explorer decoration and are never automatically added to `.obsidianignore`.
 

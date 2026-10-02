@@ -176,10 +176,10 @@ test('saving overrides writes new mappings and creates only missing anchored tem
 		templateBase: { 'catalog.base': ['', false] },
 	});
 	assert.deepEqual(f.frontmatter.get(config.path)?.['template-md'], { 'keep.md': ['', false] });
-	assert.deepEqual(f.frontmatter.get(config.path)?.['book-tabs-template-canvas'], { 'boards/blank.canvas': ['', false] });
-	assert.equal(f.frontmatter.get(config.path)?.['book-tabs-template-paths-under-global-folder'], true);
-	assert.equal(f.frontmatter.get(config.path)?.['book-tabs-template-date-format'], 'YYYY-MM-DD');
-	assert.deepEqual(f.frontmatter.get(config.path)?.['book-tabs-template-excluded-subfolders'], ['sub/private']);
+	assert.deepEqual((f.frontmatter.get(config.path)?.['book-tabs'] as Record<string, unknown>)?.['template-canvas'], { 'boards/blank.canvas': ['', false] });
+	assert.equal((f.frontmatter.get(config.path)?.['book-tabs'] as Record<string, unknown>)?.['template-paths-under-global-folder'], true);
+	assert.equal((f.frontmatter.get(config.path)?.['book-tabs'] as Record<string, unknown>)?.['template-date-format'], 'YYYY-MM-DD');
+	assert.deepEqual((f.frontmatter.get(config.path)?.['book-tabs'] as Record<string, unknown>)?.['template-excluded-subfolders'], ['sub/private']);
 	assert.ok(f.files.get('templates/Book A/boards/blank.canvas') instanceof TFile);
 	assert.equal(new TextDecoder().decode(f.binary.get('templates/Book A/boards/blank.canvas')), '{"nodes":[],"edges":[]}\n');
 	assert.equal(new TextDecoder().decode(f.binary.get('templates/Book A/catalog.base')), 'views: []\n');

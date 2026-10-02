@@ -3,6 +3,7 @@ import { Notice, TFile, normalizePath } from 'obsidian';
 import type ScopeTabsPlugin from './main';
 import type { BookScope, ManualTabTextColor } from './types';
 import { sanitizeConfigBaseName, sanitizeFrontmatterProperty, sanitizeTabTextFrontmatterProperty } from './settings-model';
+import { BOOK_TABS_SECTION } from './frontmatter-section';
 
 const HEX = /^#[0-9a-f]{6}$/i;
 const CSS_HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -30,7 +31,7 @@ export class BookColorService {
 		};
 		if (baseName === old.configFileBaseName && colorKey === old.colorFrontmatterProperty && textKey === old.tabTextFrontmatterProperty) return;
 		const renames = [[old.colorFrontmatterProperty, colorKey], [old.tabTextFrontmatterProperty, textKey]].filter(([from, to]) => from !== to) as [string, string][];
-		const keys = [...new Set(renames.flatMap(([from, to]) => [from, to, prefixedConfigKey(from), prefixedConfigKey(to)]))];
+		const keys = [...new Set([BOOK_TABS_SECTION, ...renames.flatMap(([from, to]) => [from, to, prefixedConfigKey(from), prefixedConfigKey(to)])])];
 		const files = this.plugin.app.vault.getMarkdownFiles().filter(file => file.parent
 			&& !file.parent.isRoot()
 			&& file.basename === old.configFileBaseName
@@ -47,7 +48,7 @@ export class BookColorService {
 			for (const file of files) {
 				if (renames.length) {
 					await updateConfigFrontmatter(this.plugin.app, file, (fm: Record<string, unknown>, context) => {
-						const values = new Map(keys.filter(key => key in fm).map(key => [key, fm[key]]));
+						const values = new Map(keys.filter(key => key in fm).map(key => [key, structuredClone(fm[key])]));
 						changed.push({ file, values });
 						const logical = new Map(renames.map(([from]) => [from, readPluginFrontmatter(fm, from)]));
 						const present = new Set(renames.map(([from]) => from).filter(from => hasPluginFrontmatter(fm, from)));
@@ -224,6 +225,6 @@ export function validateColorKeys(colorKey: string, textKey: string): void {
 	colorKey = colorKey.replace(/^book-tabs-/, '');
 	textKey = textKey.replace(/^book-tabs-/, '');
 	if (colorKey === textKey) throw new Error('Book color and tab text must use different frontmatter properties.');
-	const reserved = new Set(['fileOrder', 'creation-date', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'forcedOrderingDirection', 'tabInsertDirection', 'bookNoteOpenMode', 'aliases']);
+	const reserved = new Set(['book-tabs', 'fileOrder', 'creation-date', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'forcedOrderingDirection', 'tabInsertDirection', 'bookNoteOpenMode', 'aliases']);
 	if (reserved.has(colorKey) || reserved.has(textKey)) throw new Error('Color properties cannot use ordering or navigation property names.');
 }

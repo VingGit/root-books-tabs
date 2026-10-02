@@ -6,7 +6,24 @@ import { makeTemplateRule, ruleValues, type FolderTemplateOverrides, type Templa
 import { compileArticleBlacklist, type ArticleMutationPlan, type ArticlePropertyKind, type ArticleNavigatorKeys } from './article-navigator';
 import { updateConfigFrontmatter, writePluginFrontmatter } from './config-frontmatter';
 import { isValidConfigTitleProperty } from './config-note-titles';
+import { PORTABLE_SETTING_KEYS } from './vault-config';
+import { BOOK_TABS_SECTION } from './frontmatter-section';
 import type { BookNoteOpenMode, FileExplorerOpenBehavior, MainBookSwitchBehavior, ManualTabTextColor, TemplateFileType, TemplateRule } from './types';
+
+class DeleteFrontmatterModal extends Modal {
+	constructor(app: App, private readonly plugin: ScopeTabsPlugin, private readonly count: number, private readonly updated: () => void) { super(app); }
+	onOpen(): void {
+		this.setTitle('Delete all frontmatter?');
+		this.contentEl.createEl('p', { text: `Remove every frontmatter property from ${this.count} Markdown notes in ${this.app.vault.getName()}, including properties belonging to other plugins. Note bodies are preserved. A backup is saved in this vault’s plugin folder, and automatic regeneration stays paused.` });
+		new Setting(this.contentEl)
+			.addButton(button => button.setButtonText('Cancel').onClick(() => this.close()))
+			.addButton(button => button.setDestructive().setButtonText('Delete all frontmatter').onClick(async () => {
+				button.setDisabled(true);
+				try { const result = await this.plugin.frontmatterMaintenance.deleteAll(); new Notice(`Removed frontmatter from ${result.count} notes. Backup: ${result.backupPath}`); this.updated(); this.close(); }
+				catch (error) { new Notice(error instanceof Error ? error.message : 'Frontmatter reset stopped. The backup is preserved.'); button.setDisabled(false); }
+			}));
+	}
+}
 
 function createTemplateDrawer(container: HTMLElement, open: boolean): { content: HTMLElement; setOpen: (value: boolean) => void } {
 	const drawer = container.createDiv({ cls: 'scope-tabs-template-drawer' });
@@ -640,6 +657,22 @@ export class ScopeTabsSettingTab extends PluginSettingTab {
 
 	private renderMaintenance(containerEl: HTMLElement): void {
 		new Setting(containerEl).setName('Maintenance').setHeading();
+		let regenerationField = 'creation-date';
+		new Setting(containerEl).setClass('scope-tabs-frontmatter-maintenance').setName('Frontmatter maintenance')
+			.setDesc('Regenerate one selected field at a time. Delete removes all Markdown frontmatter after a review and saves a backup; note bodies stay intact. Plugin settings use the book-tabs YAML section.')
+			.addDropdown(dropdown => dropdown.addOptions({ 'creation-date': 'Creation timestamps (all notes)', aliases: 'Folder-note aliases', 'display-title': 'Folder-note display titles', [BOOK_TABS_SECTION]: 'Migrate plugin sections', ...Object.fromEntries(PORTABLE_SETTING_KEYS.map(key => [key, `Global setting: ${key}`])) })
+				.setValue(regenerationField).onChange(value => { regenerationField = value; }))
+			.addButton(button => button.setButtonText('Regenerate selected field').onClick(async () => {
+				try { const count = await this.scopeTabs.frontmatterMaintenance.regenerate(regenerationField); new Notice(`Updated ${regenerationField} in ${count} note(s).`); }
+				catch (error) { new Notice(error instanceof Error ? error.message : 'Could not regenerate the selected field.'); }
+			}))
+			.addButton(button => button.setDestructive().setButtonText('Delete frontmatter…').onClick(async () => {
+				const preview = await this.scopeTabs.frontmatterMaintenance.previewDelete();
+				new DeleteFrontmatterModal(this.app, this.scopeTabs, preview.count, () => this.update()).open();
+			}));
+		new Setting(containerEl).setName('Pause automatic frontmatter regeneration')
+			.setDesc('Keep this on while restoring and reviewing fields one by one. Explicit settings saves and the regeneration button still work. Companion plugins may maintain their own fields.')
+			.addToggle(toggle => toggle.setValue(this.scopeTabs.frontmatterMaintenance.paused).onChange(async value => { await this.scopeTabs.frontmatterMaintenance.setPaused(value); }));
 		if (this.scopeTabs.settings.indexMoveDecision !== 'ask') new Setting(containerEl)
 			.setName('Remembered config-note move action')
 			.setDesc('Clear the saved choice so the safety dialog appears again.')

@@ -1,6 +1,7 @@
 import { getFrontMatterInfo, Modal, normalizePath, Notice, parseYaml, TFile, type FileManager } from 'obsidian';
 import { updateConfigFrontmatter } from './config-frontmatter';
 import type ScopeTabsPlugin from './main';
+import { BOOK_TABS_SECTION } from './frontmatter-section';
 
 export type IndexTransferStrategy = 'merge-frontmatter' | 'append-body' | 'replace-frontmatter' | 'replace-content' | 'swap';
 export type IndexMoveDecision = 'ask' | 'block' | IndexTransferStrategy;
@@ -15,7 +16,7 @@ type RenameFile = FileManager['renameFile'];
 
 const TRANSFER_STRATEGIES: IndexTransferStrategy[] = ['merge-frontmatter', 'append-body', 'replace-frontmatter', 'replace-content', 'swap'];
 const LOCATION_OWNED_KEYS = new Set([
-	'fileOrder', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'creation-date',
+	BOOK_TABS_SECTION, 'orderingType', 'forcedOrderingType', 'forcedOrderingDirection', 'creation-date',
 	'isFreshClone', 'freshCloneOpeningPath', 'tabInsertDirection', 'bookNoteOpenMode', 'openBooksInExternalWindows',
 	'createBookIndex', 'orderingDirection',
 	'excludedBookFolders', 'forceUpdateLinks', 'template-folder', 'template-md', 'template-canvas', 'template-base',

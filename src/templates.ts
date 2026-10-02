@@ -1,5 +1,5 @@
 import { normalizePath, TFile, TFolder, type App } from 'obsidian';
-import { updateConfigFrontmatter } from './config-frontmatter';
+import { readPluginFrontmatter, removePluginFrontmatter, updateConfigFrontmatter, writePluginFrontmatter } from './config-frontmatter';
 import { formatDatePattern, hasTimeTokens } from './date-pattern';
 import type { TemplateFileType, TemplateRule } from './types';
 
@@ -134,14 +134,14 @@ export class FolderTemplateService {
 			for (const field of TEMPLATE_FIELDS) {
 				const value = overrides[field.setting];
 				removeManagedValue(frontmatter, field, context.ownedPlainKeys, value === undefined);
-				if (value !== undefined) frontmatter[`book-tabs-${field.frontmatter}`] = structuredClone(value);
+				if (value !== undefined) writePluginFrontmatter(frontmatter, field.frontmatter, structuredClone(value), context.ownedPlainKeys);
 			}
 			removeManagedBoolean(frontmatter, PATH_MODE_FIELD, context.ownedPlainKeys);
-			frontmatter[`book-tabs-${PATH_MODE_FIELD}`] = overrides.templatePathsUnderGlobalFolder ?? true;
+			writePluginFrontmatter(frontmatter, PATH_MODE_FIELD, overrides.templatePathsUnderGlobalFolder ?? true, context.ownedPlainKeys);
 			removeManagedBoolean(frontmatter, DATE_FORMAT_FIELD, context.ownedPlainKeys);
-			if (overrides.templateDateFormat?.trim()) frontmatter[`book-tabs-${DATE_FORMAT_FIELD}`] = overrides.templateDateFormat.trim();
+			if (overrides.templateDateFormat?.trim()) writePluginFrontmatter(frontmatter, DATE_FORMAT_FIELD, overrides.templateDateFormat.trim(), context.ownedPlainKeys);
 			removeManagedBoolean(frontmatter, EXCLUDED_SUBFOLDERS_FIELD, context.ownedPlainKeys);
-			if (overrides.templateExcludedSubfolders !== undefined) frontmatter[`book-tabs-${EXCLUDED_SUBFOLDERS_FIELD}`] = sanitizeExcludedSubfolders(overrides.templateExcludedSubfolders);
+			if (overrides.templateExcludedSubfolders !== undefined) writePluginFrontmatter(frontmatter, EXCLUDED_SUBFOLDERS_FIELD, sanitizeExcludedSubfolders(overrides.templateExcludedSubfolders), context.ownedPlainKeys);
 			for (const legacy of LEGACY_FIELDS) removeManagedBoolean(frontmatter, legacy, context.ownedPlainKeys);
 			this.writtenFrontmatter.set(file.path, { ...frontmatter });
 		});
@@ -388,33 +388,24 @@ export class FolderTemplateService {
 }
 
 function readManagedRule(values: Record<string, unknown>, field: TemplateField): TemplateRule | undefined {
-	const prefixed = `book-tabs-${field.frontmatter}`;
-	if (Object.prototype.hasOwnProperty.call(values, prefixed)) return values[prefixed] === null ? undefined : normalizeRule(values[prefixed], field.type);
-	if (Object.prototype.hasOwnProperty.call(values, field.frontmatter)) return normalizeRule(values[field.frontmatter], field.type);
-	if (Object.prototype.hasOwnProperty.call(values, field.setting)) return normalizeRule(values[field.setting], field.type);
-	return undefined;
+	const raw = readPluginFrontmatter(values, field.frontmatter);
+	const value = raw === undefined ? readPluginFrontmatter(values, field.setting) : raw;
+	return value === null || value === undefined ? undefined : normalizeRule(value, field.type);
 }
 
 function readManagedString(values: Record<string, unknown>, key: string): string | undefined {
-	const prefixed = `book-tabs-${key}`;
-	if (Object.prototype.hasOwnProperty.call(values, prefixed)) return typeof values[prefixed] === 'string' ? values[prefixed] : undefined;
-	return typeof values[key] === 'string' ? values[key] : undefined;
+	const value = readPluginFrontmatter(values, key);
+	return typeof value === 'string' ? value : undefined;
 }
 
 function readManagedBoolean(values: Record<string, unknown>, key: string): boolean | undefined {
-	for (const candidate of [`book-tabs-${key}`, key]) {
-		const value = values[candidate];
-		if (typeof value === 'boolean') return value;
-	}
-	return undefined;
+	const value = readPluginFrontmatter(values, key);
+	return typeof value === 'boolean' ? value : undefined;
 }
 
 function readManagedStringArray(values: Record<string, unknown>, key: string): string[] | undefined {
-	for (const candidate of [`book-tabs-${key}`, key]) {
-		if (!Object.prototype.hasOwnProperty.call(values, candidate)) continue;
-		return Array.isArray(values[candidate]) ? sanitizeExcludedSubfolders(values[candidate] as unknown[]) : [];
-	}
-	return undefined;
+	const value = readPluginFrontmatter(values, key);
+	return value === undefined || value === null ? undefined : Array.isArray(value) ? sanitizeExcludedSubfolders(value) : [];
 }
 
 function hasLegacyMarkdownValues(values: Record<string, unknown>): boolean {
@@ -441,18 +432,12 @@ function mergeLegacyMarkdownRule(
 }
 
 function removeManagedValue(values: Record<string, unknown>, field: TemplateField, ownedPlainKeys: ReadonlySet<string>, suppressPlainFallback: boolean): void {
-	const prefixed = `book-tabs-${field.frontmatter}`;
-	delete values[prefixed];
-	if (ownedPlainKeys.has(field.frontmatter)) delete values[field.frontmatter];
-	else if (suppressPlainFallback && Object.prototype.hasOwnProperty.call(values, field.frontmatter)) values[prefixed] = null;
+	if (suppressPlainFallback) removePluginFrontmatter(values, field.frontmatter, ownedPlainKeys);
 	if (ownedPlainKeys.has(field.setting)) delete values[field.setting];
 }
 
 function removeManagedBoolean(values: Record<string, unknown>, key: string, ownedPlainKeys: ReadonlySet<string>): void {
-	const prefixed = `book-tabs-${key}`;
-	delete values[prefixed];
-	if (ownedPlainKeys.has(key)) delete values[key];
-	else if (Object.prototype.hasOwnProperty.call(values, key)) values[prefixed] = null;
+	removePluginFrontmatter(values, key, ownedPlainKeys);
 }
 
 function normalizeRule(value: unknown, type: TemplateFileType): TemplateRule {
@@ -499,7 +484,7 @@ function sanitizeVaultPath(value: string): string {
 
 function legacyDateFromRules(values: Record<string, unknown>): string | undefined {
 	for (const key of ['book-tabs-template-md', 'template-md', 'templateMd', 'book-tabs-template-canvas', 'template-canvas', 'templateCanvas', 'book-tabs-template-base', 'template-base', 'templateBase']) {
-		const rule = values[key];
+		const rule = readPluginFrontmatter(values, key.replace(/^book-tabs-/, ''));
 		if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue;
 		const tuple = Object.values(rule as Record<string, unknown>)[0];
 		if (Array.isArray(tuple) && typeof tuple[0] === 'string' && typeof tuple[1] === 'string' && tuple[0].trim()) return tuple[0].trim();

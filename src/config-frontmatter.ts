@@ -1,4 +1,6 @@
 import type { App, TFile } from 'obsidian';
+import { BOOK_TABS_SECTION, frontmatterSections, RETIRED_SECTION_KEYS } from './frontmatter-section';
+import { DEFAULT_SETTINGS } from './settings-model';
 
 export const BOOK_TABS_FRONTMATTER_PREFIX = 'book-tabs-';
 
@@ -10,16 +12,13 @@ export interface ConfigFrontmatterContext {
 const HELP: Record<string, string> = {
 	isFreshClone: 'Open freshCloneOpeningPath once on next startup, then set this to false.',
 	freshCloneOpeningPath: 'Vault-relative Markdown path or first-level book folder. Invalid paths preserve saved workspace; otherwise use the newest note.',
-	fileOrder: 'Immediate child names in manual display order. The folder config note is omitted and pinned separately.',
 	'creation-date': 'Filesystem creation timestamp maintained for Markdown notes. Format YY-MM-DD HH:mm:ss.SSS.',
-	orderingEnabled: 'True after this book has been prepared for portable ordering.',
-	orderingType: 'Book default sort: manual, alphabetical, creation-date, or properties. The ordering button cycles these values.',
-	forcedOrderingType: 'False inherits the book/parent order; manual, alphabetical, creation-date, or properties forces this folder order.',
+	orderingType: 'Folder sort: alphabetical, creation-date, or properties. Properties prioritize links within this folder, then filename date, creation timestamp, and name.',
+	forcedOrderingType: 'False inherits the parent order; alphabetical, creation-date, or properties forces this folder order.',
 	forcedOrderingDirection: 'False inherits the vault/parent direction; ascending or descending permanently overrides this folder.',
 	tabInsertDirection: 'right opens beside the current tab; end appends. In a book config, false inherits the vault.',
 	bookNoteOpenMode: 'same-tab, background-tab, or focused-tab. In a book config, false inherits the vault.',
 	openBooksInExternalWindows: 'True opens new book groups in pop-outs; false uses the main window.',
-	createBookIndex: 'True creates a config note when a first-level book folder is created.',
 	configFileBaseName: 'Per-book config filename without .md. Use settings to safely rename existing config notes.',
 	colorFrontmatterProperty: 'Book color property name. Use settings to migrate existing color fields.',
 	tabTextFrontmatterProperty: 'Background-style tab foreground property name; default tab-text-bg.',
@@ -55,8 +54,9 @@ const HELP: Record<string, string> = {
 };
 
 const LEGACY_HELP: Record<string, readonly string[]> = {
+	createBookIndex: ['True creates a config note when a first-level book folder is created.'],
 	showBookLabel: ['True shows a subtle book label above Markdown notes.'],
-	fileOrder: ['Immediate child names in manual display order. Missing names are added; stale names are removed.'],
+	fileOrder: ['Immediate child names in manual display order. Missing names are added; stale names are removed.', 'Immediate child names in manual display order. The folder config note is omitted and pinned separately.'],
 	'creation-date': [
 		'Creation timestamp for Markdown notes; other file types use their filesystem creation time. Format YY-MM-DD HH:mm:ss.SSS.',
 		'Creation date for Markdown notes; other file types use their filesystem creation time. Format YY-MM-DD.',
@@ -66,7 +66,7 @@ const LEGACY_HELP: Record<string, readonly string[]> = {
 	'template-md': ['Markdown template mapping: template.md: [date format, prefix, apply filename convention]. Empty disables Markdown templating.'],
 	'template-canvas': ['Canvas template mapping: template.canvas: [date format, prefix, apply filename convention]. Empty disables Canvas templating.'],
 	'template-base': ['Base template mapping: template.base: [date format, prefix, apply filename convention]. Empty disables Base templating.'],
-	orderingEnabled: ['True after this book has been prepared for metadata ordering.'],
+	orderingEnabled: ['True after this book has been prepared for metadata ordering.', 'True after this book has been prepared for portable ordering.'],
 	showGridBoundaries: ['True shows theme-aware base-cell boundaries while a full Grid contains overflow books.'],
 	gridBoundaryThickness: ['Grid overflow boundary thickness in pixels, from 1 to 8.'],
 	'template-file-prefix': ['Prefix for newly created matching files. Use {{date}} to insert the formatted date.'],
@@ -88,23 +88,31 @@ export function prefixedConfigKey(key: string): string {
 	return `${BOOK_TABS_FRONTMATTER_PREFIX}${key}`;
 }
 
-/** A prefixed value always wins, including false, null, or another deliberately invalid sentinel. */
+/** Section values win; legacy aliases remain readable until their note is migrated. */
 export function readPluginFrontmatter(fm: Record<string, unknown>, key: string): unknown {
+	const section = frontmatterSections.read(fm);
+	if (key !== 'creation-date' && section && Object.prototype.hasOwnProperty.call(section, key)) return section[key];
 	const prefixed = prefixedConfigKey(key);
 	return hasOwn(fm, prefixed) ? fm[prefixed] : fm[key];
 }
 
 export function hasPluginFrontmatter(fm: Record<string, unknown>, key: string): boolean {
-	return hasOwn(fm, prefixedConfigKey(key)) || hasOwn(fm, key);
+	return hasOwn(frontmatterSections.read(fm) ?? {}, key) || hasOwn(fm, prefixedConfigKey(key)) || hasOwn(fm, key);
 }
 
-/** Preserve an unowned plain collision and establish/update the prefixed plugin-owned alias. */
+/** Settings writes own only the dedicated section, preserving unrelated top-level fields. */
 export function writePluginFrontmatter(
 	fm: Record<string, unknown>,
 	key: string,
 	value: unknown,
 	ownedPlainKeys: ReadonlySet<string> = new Set(),
 ): string {
+	if (key !== 'creation-date') {
+		frontmatterSections.ensure(fm)[key] = value;
+		delete fm[prefixedConfigKey(key)];
+		if (ownedPlainKeys.has(key)) delete fm[key];
+		return `${BOOK_TABS_SECTION}.${key}`;
+	}
 	const prefixed = prefixedConfigKey(key);
 	const destination = hasOwn(fm, prefixed) || (hasOwn(fm, key) && !ownedPlainKeys.has(key)) ? prefixed : key;
 	fm[destination] = value;
@@ -118,6 +126,14 @@ export function ensurePluginFrontmatter(
 	value: unknown,
 	ownedPlainKeys: ReadonlySet<string> = new Set(),
 ): string | null {
+	if (key !== 'creation-date') {
+		const section = frontmatterSections.ensure(fm);
+		if (hasOwn(section, key)) return null;
+		section[key] = hasOwn(fm, prefixedConfigKey(key)) ? fm[prefixedConfigKey(key)] : ownedPlainKeys.has(key) && hasOwn(fm, key) ? fm[key] : value;
+		delete fm[prefixedConfigKey(key)];
+		if (ownedPlainKeys.has(key)) delete fm[key];
+		return `${BOOK_TABS_SECTION}.${key}`;
+	}
 	const prefixed = prefixedConfigKey(key);
 	if (hasOwn(fm, prefixed) || (hasOwn(fm, key) && ownedPlainKeys.has(key))) return null;
 	if (hasOwn(fm, key)) {
@@ -134,6 +150,16 @@ export function removePluginFrontmatter(
 	key: string,
 	ownedPlainKeys: ReadonlySet<string> = new Set(),
 ): void {
+	if (key !== 'creation-date') {
+		const section = frontmatterSections.read(fm);
+		if (section) {
+			if (hasOwn(fm, key) && !ownedPlainKeys.has(key)) section[key] = null;
+			else delete section[key];
+		}
+		delete fm[prefixedConfigKey(key)];
+		if (ownedPlainKeys.has(key)) delete fm[key];
+		return;
+	}
 	const prefixed = prefixedConfigKey(key);
 	const plainCollision = hasOwn(fm, key) && !ownedPlainKeys.has(key);
 	if (ownedPlainKeys.has(key)) delete fm[key];
@@ -147,11 +173,18 @@ export async function updateConfigFrontmatter(app: App, file: TFile, change: (fm
 	const obsoleteKeys = findObsoleteGeneratedKeys(before);
 	const context: ConfigFrontmatterContext = { ownedPlainKeys: findCommentOwnedPlainKeys(before, options.aliases) };
 	const applyChange = (fm: Record<string, unknown>): void => {
+		frontmatterSections.migrate(fm, context.ownedPlainKeys, [...Object.keys(HELP), ...Object.keys(LEGACY_HELP), ...Object.keys(DEFAULT_SETTINGS), ...Object.keys(options.aliases ?? {}), ...RETIRED_SECTION_KEYS]);
 		for (const key of obsoleteKeys) if (typeof fm[key] === 'number') delete fm[key];
 		for (const key of context.ownedPlainKeys) if (hasOwn(fm, prefixedConfigKey(key))) delete fm[key];
 		change(fm, context);
+		frontmatterSections.normalize(fm);
 	};
 	const cached = app.metadataCache?.getFileCache?.(file)?.frontmatter;
+	if (!cached && !/^\uFEFF?---[ \t]*\r?\n/.test(before)) {
+		const empty: Record<string, unknown> = {};
+		applyChange(empty);
+		if (!Object.keys(empty).length) return;
+	}
 	let prepared: Record<string, unknown> | null = null;
 	if (cached) {
 		prepared = cloneFrontmatter(cached);
@@ -234,26 +267,35 @@ function isObsoleteHelp(line: string): boolean {
 		|| (line.startsWith('# Book default sort: ') && line !== `# ${HELP.orderingType}`);
 }
 
-/** Preserve leading YAML comments attached to surviving top-level properties. */
+/** Preserve leading YAML comments on surviving top-level and plugin-section properties. */
 export function restoreConfigComments(before: string, after: string, renamedKeys: Record<string, string> = {}): string {
 	const comments = new Map<string, string[]>();
 	const lines = before.split(/\r?\n/);
 	if (lines[0]?.trim() !== '---') return after;
 	let pending: string[] = [];
+	let inSection = false;
 	for (const line of lines.slice(1)) {
 		if (/^(---|\.\.\.)\s*$/.test(line)) break;
-		if (line.startsWith('#')) { pending.push(line); continue; }
-		const key = /^([\w-]+|"[^"\n]+"|'[^'\n]+')\s*:/.exec(line)?.[1];
-		if (key && pending.length) comments.set(renamedKeys[key.replace(/^["']|["']$/g, '')] ?? key.replace(/^["']|["']$/g, ''), pending);
+		if (/^(?: {2})?#/.test(line)) { pending.push(line); continue; }
+		if (/^book-tabs\s*:/.test(line)) inSection = true;
+		else if (/^\S/.test(line)) inSection = false;
+		const raw = frontmatterLineKey(line) ?? (inSection ? /^ {2}([\w-]+)\s*:/.exec(line)?.[1] : undefined);
+		const nested = inSection && line.startsWith('  ');
+		const key = raw ? `${nested ? 'book-tabs.' : ''}${renamedKeys[raw] ?? raw}` : undefined;
+		if (key && pending.length) comments.set(key, pending);
 		if (line.trim()) pending = [];
 	}
 	let yaml = false, closed = false;
 	const output: string[] = [];
+	inSection = false;
 	for (const [index, line] of after.split(/\r?\n/).entries()) {
 		if (index === 0 && line.trim() === '---') yaml = true;
 		else if (yaml && /^(---|\.\.\.)\s*$/.test(line)) { yaml = false; closed = true; }
 		if (yaml && !closed) {
-			const key = /^([\w-]+|"[^"\n]+"|'[^'\n]+')\s*:/.exec(line)?.[1]?.replace(/^["']|["']$/g, '');
+			if (/^book-tabs\s*:/.test(line)) inSection = true;
+			else if (/^\S/.test(line) && !line.startsWith('#')) inSection = false;
+			const raw = frontmatterLineKey(line) ?? (inSection ? /^ {2}([\w-]+)\s*:/.exec(line)?.[1] : undefined);
+			const key = raw ? `${inSection && line.startsWith('  ') ? 'book-tabs.' : ''}${raw}` : undefined;
 			for (const comment of key ? comments.get(key) ?? [] : []) if (!output.slice(-((comments.get(key!)?.length ?? 0) + 1)).includes(comment)) output.push(comment);
 		}
 		output.push(line);
@@ -267,14 +309,27 @@ export function addConfigComments(content: string, aliases: Record<string, strin
 	const end = lines.findIndex((line, index) => index > 0 && /^(---|\.\.\.)\s*$/.test(line));
 	if (end < 0) return content;
 	const keys = new Set(lines.slice(1, end).map(frontmatterLineKey).filter((key): key is string => key !== null));
+	const sectionKeys = new Set<string>();
+	let insideSection = false;
+	for (const line of lines.slice(1, end)) {
+		if (/^book-tabs\s*:/.test(line)) { insideSection = true; continue; }
+		if (/^\S/.test(line) && !line.startsWith('#')) insideSection = false;
+		if (insideSection) { const key = /^ {2}([\w-]+)\s*:/.exec(line)?.[1]; if (key) sectionKeys.add(key); }
+	}
 	const output: string[] = [];
+	insideSection = false;
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index]!;
 		if (index > 0 && index < end) {
+			if (/^book-tabs\s*:/.test(line)) insideSection = true;
+			else if (/^\S/.test(line) && !line.startsWith('#')) insideSection = false;
+			const nestedKey = insideSection ? /^ {2}([\w-]+)\s*:/.exec(line)?.[1] : undefined;
+			const nestedHelp = nestedKey ? HELP[aliases[nestedKey] ?? nestedKey] : undefined;
+			if (nestedHelp && output[output.length - 1] !== `  # ${nestedHelp}`) output.push(`  # ${nestedHelp}`);
 			const key = frontmatterLineKey(line) ?? undefined;
 			const plainKey = key ? removePluginPrefix(key) : undefined;
 			const help = key && plainKey ? HELP[aliases[key] ?? aliases[plainKey] ?? plainKey] : undefined;
-			const collidingPlain = !!key && !key.startsWith(BOOK_TABS_FRONTMATTER_PREFIX) && keys.has(prefixedConfigKey(key));
+			const collidingPlain = !!key && !key.startsWith(BOOK_TABS_FRONTMATTER_PREFIX) && (keys.has(prefixedConfigKey(key)) || sectionKeys.has(key) || key !== 'creation-date' && keys.has(BOOK_TABS_SECTION));
 			if (help && collidingPlain && output[output.length - 1] === `# ${help}`) output.pop();
 			if (help && !collidingPlain && output[output.length - 1] !== `# ${help}`) output.push(`# ${help}`);
 		}

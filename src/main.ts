@@ -13,6 +13,7 @@ import { LinkMaintenanceController } from './link-maintenance';
 import { FolderTemplateService } from './templates';
 import { ConfigNoteTitleService } from './config-note-titles';
 import { ArticleNavigatorIntegration } from './article-navigator';
+import { FrontmatterMaintenanceService } from './frontmatter-maintenance';
 import { FirstLevelFolderScopeResolver } from './scope';
 import { migrateRuntimeState, migrateSettings } from './settings-model';
 import { ScopeTabsSettingTab } from './settings';
@@ -35,6 +36,7 @@ export default class ScopeTabsPlugin extends Plugin {
 	readonly templates = new FolderTemplateService(this);
 	readonly configNoteTitles = new ConfigNoteTitleService(this);
 	readonly articleNavigator = new ArticleNavigatorIntegration(this.app);
+	readonly frontmatterMaintenance = new FrontmatterMaintenanceService(this);
 	private unloading = false;
 	private settingTab: ScopeTabsSettingTab | null = null;
 	private saveQueue: Promise<void> = Promise.resolve();
@@ -84,6 +86,7 @@ export default class ScopeTabsPlugin extends Plugin {
 		this.configurationMigrated = isRecord(saved) && saved.configurationMigratedV1 === true;
 		this.legacyManual = isRecord(saved) && saved.colorMode === 'manual';
 		this.settings = migrateSettings(saved);
+		this.frontmatterMaintenance.paused = isRecord(saved) && isRecord(saved.frontmatterMaintenanceV1) && saved.frontmatterMaintenanceV1.paused === true;
 		if (isRecord(saved) && isRecord(saved.automaticColorsV1)) {
 			for (const [book, color] of Object.entries(saved.automaticColorsV1)) if (typeof color === 'string') this.settings.manualColors[book] = color;
 		}
@@ -97,6 +100,11 @@ export default class ScopeTabsPlugin extends Plugin {
 
 	async saveRuntimeState(): Promise<void> {
 		await this.persistState();
+	}
+
+	async settleFrontmatterWrites(): Promise<void> {
+		await Promise.all([this.portableConfigurationTask, this.suggestedPluginSyncTask]);
+		await Promise.all([this.bookOrder.whenIdle(), this.vaultConfig.whenIdle(), this.configNoteTitles.whenIdle()]);
 	}
 
 	async refreshColorConfiguration(notify: boolean): Promise<void> {
@@ -173,7 +181,7 @@ export default class ScopeTabsPlugin extends Plugin {
 		this.registerEvent(this.app.vault.on('create', (file) => {
 			void (async () => {
 				if (file instanceof TFile && this.scopeResolver.hasMultipleBooks() && this.scopeResolver.resolveFile(file)) await this.templates.handleCreate(file);
-				if (file instanceof TFolder && file.parent?.isRoot() && this.scopeResolver.hasMultipleBooks() && this.scopeResolver.listBooks().some(book => book.id === file.path)) {
+				if (!this.frontmatterMaintenance.paused && file instanceof TFolder && file.parent?.isRoot() && this.scopeResolver.hasMultipleBooks() && this.scopeResolver.listBooks().some(book => book.id === file.path)) {
 					const config = await this.bookOrder.ensureConfig(file);
 					if (this.settings.indexTitleSync) await this.configNoteTitles.syncFile(config, this.settings.indexTitleProperty);
 				}
@@ -181,28 +189,28 @@ export default class ScopeTabsPlugin extends Plugin {
 				await this.handleVaultStructureChange();
 			})().catch(console.error);
 		}));
-		this.registerEvent(this.app.vault.on('delete', (file) => {
-			void (this.scopeResolver.hasMultipleBooks() ? this.bookOrder.syncDeleted(file.path) : Promise.resolve()).then(() => this.handleVaultStructureChange()).catch(console.error);
+		this.registerEvent(this.app.vault.on('delete', () => {
+			void this.handleVaultStructureChange().catch(console.error);
 		}));
-		this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
-			void (this.scopeResolver.hasMultipleBooks() ? this.bookOrder.syncStructure(file, oldPath) : Promise.resolve()).then(() => this.handleVaultStructureChange()).catch(console.error);
+		this.registerEvent(this.app.vault.on('rename', (file) => {
+			void (this.scopeResolver.hasMultipleBooks() ? this.bookOrder.syncStructure(file) : Promise.resolve()).then(() => this.handleVaultStructureChange()).catch(console.error);
 		}));
 		this.registerEvent(this.app.metadataCache.on('changed', (file) => {
-			if (this.scopeResolver.hasMultipleBooks() && file.path === 'index.md') {
+			if (!this.frontmatterMaintenance.paused && this.scopeResolver.hasMultipleBooks() && file.path === 'index.md') {
 				const frontmatter: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter;
 				const aliases = isRecord(frontmatter) ? frontmatter.aliases : undefined;
 				if (!Array.isArray(aliases) || aliases.length !== 1 || aliases[0] !== this.app.vault.getName()) {
 					new Notice('The vault config alias follows the vault name. Rename the vault instead.');
 					void this.vaultConfig.ensureRoot().catch(console.error);
 				}
-			} else if (this.scopeResolver.hasMultipleBooks() && !this.bookOrder.hasExpectedAlias(file)) {
+			} else if (!this.frontmatterMaintenance.paused && this.scopeResolver.hasMultipleBooks() && !this.bookOrder.hasExpectedAlias(file)) {
 				new Notice('Folder-note aliases follow their folder names. Rename the folder instead.');
 			}
 			this.bookOrder.refresh(file);
 			this.templates.refresh(file);
 			if (this.scopeResolver.hasMultipleBooks()) void this.bookOrder.syncConfig(file).catch(console.error);
 			if (this.scopeResolver.hasMultipleBooks()) void this.bookOrder.syncCreationDate(file).catch(console.error);
-			if (this.scopeResolver.hasMultipleBooks() && this.settings.indexTitleSync && this.configNoteTitles.isManagedConfigNote(file)) {
+			if (!this.frontmatterMaintenance.paused && this.scopeResolver.hasMultipleBooks() && this.settings.indexTitleSync && this.configNoteTitles.isManagedConfigNote(file)) {
 				void this.configNoteTitles.syncFile(file, this.settings.indexTitleProperty).catch(console.error);
 			}
 			if (file.path === 'index.md') {
@@ -222,7 +230,7 @@ export default class ScopeTabsPlugin extends Plugin {
 		if (startupResolved && this.vaultConfig.values.isFreshClone === true) await this.vaultConfig.set('isFreshClone', false);
 
 		try {
-			if (this.scopeResolver.hasMultipleBooks()) {
+			if (this.scopeResolver.hasMultipleBooks() && !this.frontmatterMaintenance.paused) {
 				await this.bookOrder.refreshCreationDates();
 				await this.syncSuggestedPluginKeys();
 				if (this.settings.indexTitleSync) await this.configNoteTitles.reconcileAll(this.settings.indexTitleProperty);
@@ -257,6 +265,7 @@ export default class ScopeTabsPlugin extends Plugin {
 	}
 
 	private ensurePortableConfiguration(): Promise<void> {
+		if (this.frontmatterMaintenance.paused) return Promise.resolve();
 		if (this.portableConfigurationReady) return Promise.resolve();
 		if (this.portableConfigurationTask) return this.portableConfigurationTask;
 		const operation = (async () => {
@@ -296,6 +305,7 @@ export default class ScopeTabsPlugin extends Plugin {
 			manualTabTextColors: this.settings.manualTabTextColors,
 			indexMoveDecision: this.settings.indexMoveDecision,
 			frontmatterDisplayMode: this.settings.frontmatterDisplayMode,
+			frontmatterMaintenanceV1: { paused: this.frontmatterMaintenance.paused },
 			configurationMigratedV1: this.configurationMigrated,
 			automaticColorsV1: this.settings.manualColors,
 			runtimeStateV1: this.runtimeState,

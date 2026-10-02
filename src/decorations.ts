@@ -82,12 +82,10 @@ export class DecorationController {
 	private collapsedSecondaryBookIds = new Set<string>();
 	private explorerBookDropTargetEl: HTMLElement | null = null;
 	private sortingTabs = false;
-	private orderingBookId: string | null = null;
-	private orderingPending = false;
-	private stopOrdering: (() => void) | null = null;
 	private explorerSortRestorers = new Map<object, () => void>();
 	private explorersShowingExcluded = new Set<HTMLElement>();
 	private excludedExpandedBeforeBookModeOff = new Map<HTMLElement, Set<string>>();
+	private articleObservers = new Map<MarkdownView, { observer: MutationObserver; frame: number | null }>();
 
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
 
@@ -130,7 +128,8 @@ export class DecorationController {
 	}
 
 	cleanup(): void {
-		this.exitOrdering();
+		for (const entry of this.articleObservers.values()) { entry.observer.disconnect(); if (entry.frame !== null) window.cancelAnimationFrame(entry.frame); }
+		this.articleObservers.clear();
 		for (const restore of this.explorerSortRestorers.values()) restore();
 		this.explorerSortRestorers.clear();
 		if (this.explorerRefreshFrame !== null) window.cancelAnimationFrame(this.explorerRefreshFrame);
@@ -195,6 +194,10 @@ export class DecorationController {
 	}
 
 	private refreshLeavesAndTabs(): void {
+		const liveViews = new Set(this.plugin.app.workspace.getLeavesOfType('markdown').map(leaf => leaf.view));
+		for (const [view, entry] of this.articleObservers) if (!liveViews.has(view)) {
+			entry.observer.disconnect(); if (entry.frame !== null) window.cancelAnimationFrame(entry.frame); this.articleObservers.delete(view);
+		}
 		for (const doc of this.getWorkspaceDocuments()) {
 			doc.querySelectorAll<HTMLElement>('.workspace-tab-header').forEach((header) => {
 				header.removeClass('scope-tabs-color-tab');
@@ -222,11 +225,14 @@ export class DecorationController {
 
 	private decorateArticlePlaceholders(leaf: WorkspaceLeaf): void {
 		if (!(leaf.view instanceof MarkdownView)) return;
-		const existing = leaf.view.contentEl.querySelector<HTMLElement>(':scope > .scope-tabs-article-placeholders');
+		this.observeArticleHosts(leaf, leaf.view);
+		const hosts = Array.from(leaf.view.contentEl.querySelectorAll<HTMLElement>('.markdown-preview-view .markdown-preview-sizer, .markdown-source-view .cm-sizer'));
+		const existingCards = Array.from(leaf.view.contentEl.querySelectorAll<HTMLElement>('.scope-tabs-article-placeholders'));
+		const removeCards = (): void => existingCards.forEach(card => card.remove());
 		const file = leaf.view.file;
 		if (!file?.parent || !this.plugin.scopeResolver.resolveFile(file)
 			|| compileArticleBlacklist(this.plugin.settings.articleNavigatorBlacklist).matches(file.path)
-			|| file.path === this.plugin.bookOrder.getConfigPath(file.parent)) { existing?.remove(); return; }
+			|| file.path === this.plugin.bookOrder.getConfigPath(file.parent)) { removeCards(); return; }
 		const folder = file.parent;
 		const config = this.plugin.app.vault.getFileByPath(this.plugin.bookOrder.getConfigPath(folder));
 		const folderValues = config ? this.plugin.app.metadataCache.getFileCache(config)?.frontmatter ?? {} : {};
@@ -246,48 +252,66 @@ export class DecorationController {
 			const missing = value === undefined || value === null || value === '' || Array.isArray(value) && value.length === 0;
 			return missing && readPluginFrontmatter(folderValues, `article-placeholder-hidden-${direction.kind}`) !== true;
 		});
-		if (!visible.length) { existing?.remove(); return; }
+		if (!visible.length) { removeCards(); return; }
 		const signature = JSON.stringify([file.path, visible.map(direction => [direction.kind, direction.key, direction.reverse]),
 			this.plugin.templates.resolveForFolder(folder)]);
-		if (existing?.dataset.scopeTabsArticleSignature === signature) return;
-		existing?.remove();
-		const container = leaf.view.contentEl.createDiv({ cls: 'scope-tabs-article-placeholders' });
-		container.dataset.scopeTabsArticleSignature = signature;
-		leaf.view.contentEl.prepend(container);
-		for (const direction of visible) {
-			const card = container.createDiv({ cls: 'scope-tabs-article-placeholder' });
-			card.createSpan({ cls: 'scope-tabs-article-placeholder-label', text: direction.label });
-			const close = card.createEl('button', { cls: 'clickable-icon scope-tabs-article-placeholder-close', attr: { type: 'button', 'aria-label': `Hide ${direction.label} suggestions in ${folder.path}` } });
-			setIcon(close, 'x');
-			const input = card.createEl('input', { cls: 'scope-tabs-article-placeholder-input', attr: { type: 'text', value: direction.defaultName, 'aria-label': `${direction.label} filename` } });
-			input.value = direction.defaultName;
-			const preview = card.createSpan({ cls: 'scope-tabs-article-placeholder-preview' });
-			const refreshPreview = (): void => preview.setText(`Create: ${this.plugin.templates.previewSuggestedMarkdownPath(folder, input.value || direction.defaultName)}`);
-			input.addEventListener('input', refreshPreview); refreshPreview();
-			const create = card.createEl('button', { text: 'Create', cls: 'mod-cta', attr: { type: 'button' } });
-			close.addEventListener('click', () => {
-				void (async () => {
-					const folderConfig = await this.plugin.bookOrder.ensureConfig(folder);
-					await updateConfigFrontmatter(this.plugin.app, folderConfig, (frontmatter, context) => {
-						writePluginFrontmatter(frontmatter, `article-placeholder-hidden-${direction.kind}`, true, context.ownedPlainKeys);
-					});
-					new Notice(`Hidden ${direction.label.toLowerCase()} suggestions for ${folder.path}. Remove the matching article-placeholder-hidden property from its config note to restore them.`);
-					this.refresh();
-				})().catch(console.error);
-			});
-			create.addEventListener('click', () => {
-				create.setAttr('disabled', 'true');
-				void (async () => {
-					const created = await this.plugin.templates.createSuggestedMarkdown(folder, input.value || direction.defaultName);
-					const linkToCreated = `[[${this.plugin.app.metadataCache.fileToLinktext(created, file.path, true)}]]`;
-					const linkToCurrent = `[[${this.plugin.app.metadataCache.fileToLinktext(file, created.path, true)}]]`;
-					await this.plugin.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => { frontmatter[direction.key] = linkToCreated; });
-					await this.plugin.app.fileManager.processFrontMatter(created, (frontmatter: Record<string, unknown>) => { frontmatter[direction.reverse] = linkToCurrent; });
-					await leaf.openFile(created);
-					this.refresh();
-				})().catch((error: unknown) => { console.error(error); new Notice('Could not create the suggested article.'); create.removeAttribute('disabled'); });
-			});
+		for (const host of hosts) {
+			const existing = host.querySelector<HTMLElement>(':scope > .scope-tabs-article-placeholders');
+			if (existing?.dataset.scopeTabsArticleSignature === signature) continue;
+			existing?.remove();
+			const container = host.createDiv({ cls: 'scope-tabs-article-placeholders' });
+			container.dataset.scopeTabsArticleSignature = signature;
+			const backlinks = host.querySelector<HTMLElement>(':scope > .embedded-backlinks');
+			if (backlinks) host.insertBefore(container, backlinks);
+			for (const direction of visible) {
+				const card = container.createDiv({ cls: `scope-tabs-article-placeholder scope-tabs-article-placeholder-${direction.kind}` });
+				card.createSpan({ cls: 'scope-tabs-article-placeholder-label', text: direction.kind === 'previous' ? `‹ ${direction.label}` : `${direction.label} ›` });
+				const close = card.createEl('button', { cls: 'clickable-icon scope-tabs-article-placeholder-close', attr: { type: 'button', 'aria-label': `Hide ${direction.label} suggestions in ${folder.path}` } });
+				setIcon(close, 'x');
+				const input = card.createEl('input', { cls: 'scope-tabs-article-placeholder-input', attr: { type: 'text', value: direction.defaultName, 'aria-label': `${direction.label} filename` } });
+				input.value = direction.defaultName;
+				const preview = card.createSpan({ cls: 'scope-tabs-article-placeholder-preview' });
+				const refreshPreview = (): void => preview.setText(`Create: ${this.plugin.templates.previewSuggestedMarkdownPath(folder, input.value || direction.defaultName)}`);
+				input.addEventListener('input', refreshPreview); refreshPreview();
+				const create = card.createEl('button', { text: 'Create', cls: 'mod-cta', attr: { type: 'button' } });
+				close.addEventListener('click', () => {
+					void (async () => {
+						const folderConfig = await this.plugin.bookOrder.ensureConfig(folder);
+						await updateConfigFrontmatter(this.plugin.app, folderConfig, (frontmatter, context) => {
+							writePluginFrontmatter(frontmatter, `article-placeholder-hidden-${direction.kind}`, true, context.ownedPlainKeys);
+						});
+						new Notice(`Hidden ${direction.label.toLowerCase()} suggestions for ${folder.path}. Remove the matching article-placeholder-hidden property from its config note to restore them.`);
+						this.refresh();
+					})().catch(console.error);
+				});
+				create.addEventListener('click', () => {
+					create.setAttr('disabled', 'true');
+					void (async () => {
+						const created = await this.plugin.templates.createSuggestedMarkdown(folder, input.value || direction.defaultName);
+						const linkToCreated = `[[${this.plugin.app.metadataCache.fileToLinktext(created, file.path, true)}]]`;
+						const linkToCurrent = `[[${this.plugin.app.metadataCache.fileToLinktext(file, created.path, true)}]]`;
+						await this.plugin.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => { frontmatter[direction.key] = linkToCreated; });
+						await this.plugin.app.fileManager.processFrontMatter(created, (frontmatter: Record<string, unknown>) => { frontmatter[direction.reverse] = linkToCurrent; });
+						await leaf.openFile(created);
+						this.refresh();
+					})().catch((error: unknown) => { console.error(error); new Notice('Could not create the suggested article.'); create.removeAttribute('disabled'); });
+				});
+			}
 		}
+	}
+
+	/** Reading/source sizers may be mounted after Obsidian's layout event. Watch only those hosts. */
+	private observeArticleHosts(leaf: WorkspaceLeaf, view: MarkdownView): void {
+		if (this.articleObservers.has(view)) return;
+		const selector = '.markdown-preview-sizer, .cm-sizer, .scope-tabs-article-placeholders';
+		const entry = { observer: new MutationObserver(records => {
+			const changed = records.some(record => [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)]
+				.some(node => node.nodeType === 1 && ((node as Element).matches(selector) || !!(node as Element).querySelector(selector))));
+			if (!changed || entry.frame !== null) return;
+			entry.frame = window.requestAnimationFrame(() => { entry.frame = null; this.decorateArticlePlaceholders(leaf); });
+		}), frame: null as number | null };
+		entry.observer.observe(view.contentEl, { childList: true, subtree: true });
+		this.articleObservers.set(view, entry);
 	}
 
 	/**
@@ -439,7 +463,7 @@ export class DecorationController {
 				if (event.relatedTarget === null) this.clearBookDropTarget();
 			};
 			const contextMenu = (event: MouseEvent) => {
-				if (event.defaultPrevented || this.orderingBookId) return;
+				if (event.defaultPrevented) return;
 				const target = getEventElement(event);
 				if (!target) return;
 				let clicked: WorkspaceLeaf | null = null;
@@ -671,7 +695,6 @@ export class DecorationController {
 	}
 
 	private disposeExplorerDecoration(root: HTMLElement, decoration: ExplorerDecoration, restoreOrder: boolean): void {
-		if (this.orderingBookId) this.exitOrdering();
 		decoration.restoreExcludedMenuSource?.();
 		this.explorersShowingExcluded.delete(root);
 		this.excludedExpandedBeforeBookModeOff.delete(root);
@@ -821,31 +844,26 @@ export class DecorationController {
 				event.stopPropagation();
 				this.showBookSwitcher(event);
 			});
-			const reorder = header.createEl('button', { cls: 'scope-tabs-order-button clickable-icon', attr: { type: 'button', 'aria-label': 'Reorder this book' } });
+			const reorder = header.createEl('button', { cls: 'scope-tabs-order-button clickable-icon', attr: { type: 'button', 'aria-label': 'Choose book sorting' } });
 			setIcon(reorder, 'list-ordered');
 			header.insertBefore(reorder, bar);
 			const direction = header.createEl('button', { cls: 'scope-tabs-order-direction clickable-icon', attr: { type: 'button' } });
 			header.insertBefore(direction, bar);
 			direction.addEventListener('click', () => {
-				if (!this.orderingBookId) return;
 				const next = this.plugin.settings.orderingDirection === 'descending' ? 'ascending' : 'descending';
-				this.plugin.settings.orderingDirection = next;
-				void this.plugin.vaultConfig.set('orderingDirection', next).then(() => this.refreshExplorer());
+				void this.plugin.bookOrder.setDirection(next).then(() => this.refreshExplorer());
 			});
-			reorder.addEventListener('click', () => {
-				if (this.orderingBookId) { this.exitOrdering(); this.refreshExplorer(); }
-				else void this.enterOrdering(root).catch((error: unknown) => { console.error(error); new Notice('Could not prepare book ordering.'); });
-			});
-			bar.addEventListener('click', () => {
-				if (!this.orderingBookId) return;
-				const folder = this.plugin.app.vault.getFolderByPath(this.orderingBookId);
+			reorder.addEventListener('click', (event: MouseEvent) => {
+				const bookId = this.plugin.settings.selectedBookId;
+				const folder = bookId ? this.plugin.app.vault.getFolderByPath(bookId) : null;
 				if (!folder) return;
-				const current = this.plugin.bookOrder.getType(folder);
-				const next = ORDERING_TYPES[(ORDERING_TYPES.indexOf(current) + 1) % ORDERING_TYPES.length]!;
-				void this.plugin.bookOrder.setType(this.orderingBookId, next).then(() => this.refreshExplorer());
+				const menu = new Menu();
+				for (const type of ORDERING_TYPES) menu.addItem(item => item.setTitle(type === 'properties' ? 'Properties' : type === 'creation-date' ? 'Date' : 'Alphabetical')
+					.setChecked(this.plugin.bookOrder.getType(folder) === type)
+					.onClick(() => { void this.plugin.bookOrder.setType(folder.path, type).then(() => this.refreshExplorer()); }));
+				menu.showAtMouseEvent(event);
 			});
 			bar.addEventListener('click', () => {
-				if (this.orderingBookId) return;
 				const book = this.plugin.scopeResolver.listBooks().find(candidate => candidate.id === this.plugin.settings.selectedBookId);
 				if (!book) return;
 				void this.plugin.navigation.openBookHome(book).catch((error: unknown) => {
@@ -854,7 +872,6 @@ export class DecorationController {
 				});
 			});
 			bar.addEventListener('contextmenu', (event: MouseEvent) => {
-				if (this.orderingBookId) return;
 				const book = this.plugin.scopeResolver.listBooks().find(candidate => candidate.id === this.plugin.settings.selectedBookId);
 				if (!book) return;
 				event.preventDefault(); event.stopPropagation();
@@ -904,7 +921,7 @@ export class DecorationController {
 				if (path) this.plugin.navigation.expectFileExplorerOpen(path);
 			};
 			const openFolderFromEvent = (event: MouseEvent | KeyboardEvent): boolean => {
-				if (this.orderingBookId || !this.plugin.scopeResolver.hasMultipleBooks()) return false;
+				if (!this.plugin.scopeResolver.hasMultipleBooks()) return false;
 				if (event instanceof MouseEvent && event.button !== 0) return false;
 				const content = getEventElement(event)?.closest<HTMLElement>('.nav-folder-title-content.scope-tabs-folder-note-title');
 				if (!content || !files.contains(content)) return false;
@@ -984,24 +1001,14 @@ export class DecorationController {
 		const tree = getExplorerTreeAdapter(this.plugin, root);
 		this.applyExplorerOrdering(root);
 		decoration.modelReady = tree !== null;
-		const folder = this.plugin.app.vault.getFolderByPath(selected.id);
-		const orderingType = this.orderingBookId && folder ? this.plugin.bookOrder.getType(folder) : null;
-		const articleKeys = this.plugin.articleNavigator.resolveKeys({ previousKey: this.plugin.settings.articleNavigatorPreviousProperty,
-			nextKey: this.plugin.settings.articleNavigatorNextProperty, seeAlsoKey: this.plugin.settings.articleNavigatorSeeAlsoProperty },
-		this.plugin.settings.articleNavigatorFollowPluginKeys).keys;
-		if (!decoration.bar.querySelector('.scope-tabs-book-rename-input')) decoration.bar.setText(orderingType === 'properties'
-			? `Properties: ${articleKeys.previousKey} / ${articleKeys.nextKey}`
-			: orderingType ? `Ordering type: ${orderingType}` : selected.name);
-		decoration.bar.setAttr('aria-label', this.orderingBookId ? `${decoration.bar.textContent}. Click to cycle ordering type.` : `Open ${selected.name} folder note`);
-		decoration.bar.toggleClass('scope-tabs-order-cycle', !!this.orderingBookId);
+		if (!decoration.bar.querySelector('.scope-tabs-book-rename-input')) decoration.bar.setText(selected.name);
+		decoration.bar.setAttr('aria-label', `Open ${selected.name} folder note`);
 		decoration.bar.toggle(this.plugin.settings.bookModeEnabled);
-		decoration.switchBook.toggle(this.plugin.settings.bookModeEnabled && !this.orderingBookId);
+		decoration.switchBook.toggle(this.plugin.settings.bookModeEnabled);
 		decoration.reorder.toggle(this.plugin.settings.bookModeEnabled && tree !== null);
-		decoration.reorder.setAttr('aria-pressed', String(this.orderingBookId === selected.id));
-		setIcon(decoration.reorder, this.orderingBookId ? 'x' : 'list-ordered');
-		decoration.reorder.setAttr('aria-label', this.orderingBookId ? 'Exit ordering mode' : 'Reorder this book');
-		decoration.reorder.toggleClass('scope-tabs-order-exit', !!this.orderingBookId);
-		decoration.direction.toggle(this.plugin.settings.bookModeEnabled && !!this.orderingBookId);
+		decoration.reorder.setAttr('aria-label', 'Choose book sorting');
+		decoration.direction.toggle(this.plugin.settings.bookModeEnabled);
+
 		const descending = this.plugin.settings.orderingDirection === 'descending';
 		setIcon(decoration.direction, descending ? 'arrow-down-wide-narrow' : 'arrow-up-narrow-wide');
 		decoration.direction.setAttr('aria-label', descending ? 'Descending order. Change to ascending.' : 'Ascending order. Change to descending.');
@@ -1054,7 +1061,7 @@ export class DecorationController {
 		for (const book of books) {
 			if (book.id !== selected.id && openBookIds.has(book.id) && !secondaryPaths.includes(book.id)) secondaryPaths.push(book.id);
 		}
-		const showExcluded = this.explorersShowingExcluded.has(root) && !this.orderingBookId;
+		const showExcluded = this.explorersShowingExcluded.has(root);
 		decoration.excludedPanel.toggleClass('is-open', showExcluded);
 		decoration.excludedPanel.setAttr('aria-hidden', String(!showExcluded));
 		if (showExcluded) for (const path of excludedPaths) tree?.itemsByPath.get(path)?.syncChildren();
@@ -1228,210 +1235,6 @@ export class DecorationController {
 		});
 	}
 
-	private exitOrdering(): void {
-		this.stopOrdering?.();
-		this.stopOrdering = null;
-		this.orderingBookId = null;
-	}
-
-	private async enterOrdering(root: HTMLElement): Promise<void> {
-		const book = this.plugin.scopeResolver.listBooks().find(book => book.id === this.plugin.settings.selectedBookId);
-		if (!book || !this.explorerDecorations.has(root) || this.orderingPending) return;
-		this.orderingPending = true;
-		try {
-			await this.plugin.bookOrder.prepare(book);
-		} finally {
-			this.orderingPending = false;
-		}
-		if (!root.isConnected || !this.plugin.settings.bookModeEnabled) return;
-		this.ensureExplorerDecoration(root);
-		const decoration = this.explorerDecorations.get(root);
-		if (!decoration || !decoration.files.isConnected || !decoration.header.isConnected) return;
-		this.exitOrdering();
-		this.orderingBookId = book.id;
-		const doc = root.ownerDocument;
-		const view: unknown = this.plugin.app.workspace.getLeavesOfType('file-explorer').find(leaf => leaf.view.containerEl === root)?.view;
-		const models = isUnknownRecord(view) && isUnknownRecord(view.fileItems) ? view.fileItems : {};
-		const folderStates = new Map<Record<string, unknown>, boolean>();
-		const belongs = (path: string) => path === book.id || path.startsWith(`${book.id}/`);
-		const collapse = (model: Record<string, unknown>, value: boolean) => {
-			if (typeof model.setCollapsed !== 'function') return;
-			try { Reflect.apply(model.setCollapsed, model, [value, false]); } catch { /* Optional native folder state adapter. */ }
-		};
-		for (const model of Object.values(models)) {
-			if (!isUnknownRecord(model) || !(model.file instanceof TFolder) || !belongs(model.file.path) || typeof model.collapsed !== 'boolean') continue;
-			folderStates.set(model, model.collapsed); collapse(model, false);
-		}
-		const highlight = doc.body.createDiv({ cls: 'scope-tabs-order-highlight' });
-		highlight.style.setProperty('--scope-tabs-book-color', this.plugin.colors.getColor(book));
-		root.addClass('scope-tabs-ordering');
-		root.style.setProperty('--scope-tabs-order-color', this.plugin.colors.getColor(book));
-		const rowPath = (row: Element | null) => {
-			const item = row?.closest<HTMLElement>('.nav-file, .nav-folder'); return item ? getExplorerItemPath(item) : '';
-		};
-		const configName = `${this.plugin.settings.configFileBaseName}.md`;
-		const isFixedConfig = (path: string) => path.split('/').pop() === configName;
-		const markFixedConfigs = () => {
-			for (const row of Array.from(decoration.files.querySelectorAll<HTMLElement>('.nav-file-title'))) {
-				const path = rowPath(row);
-				const fixed = belongs(path) && isFixedConfig(path);
-				if (fixed) {
-					if (!row.hasClass('scope-tabs-order-fixed')) row.addClass('scope-tabs-order-fixed');
-					if (row.getAttribute('aria-disabled') !== 'true') row.setAttr('aria-disabled', 'true');
-				} else {
-					if (row.hasClass('scope-tabs-order-fixed')) row.removeClass('scope-tabs-order-fixed');
-					if (row.hasAttribute('aria-disabled')) row.removeAttribute('aria-disabled');
-				}
-			}
-			for (const row of Array.from(decoration.files.querySelectorAll<HTMLElement>('.nav-folder-title'))) {
-				const path = rowPath(row);
-				const folder = belongs(path) ? this.plugin.app.vault.getFolderByPath(path) : null;
-				const override = folder ? this.plugin.bookOrder.getDirectionOverride(folder) : null;
-				let label = row.querySelector<HTMLElement>(':scope > .scope-tabs-order-direction-override');
-				if (!override) { label?.remove(); continue; }
-				if (!label) label = row.createSpan({ cls: 'scope-tabs-order-direction-override' });
-				label.setText(override);
-			}
-		};
-		const position = () => {
-			const header = decoration.header.getBoundingClientRect(), files = decoration.files.getBoundingClientRect();
-			const actions = decoration.bookActions.getBoundingClientRect();
-			const left = Math.min(header.left, files.left), right = Math.max(header.right, files.right);
-			const bottom = Math.min(files.bottom, Math.max(header.bottom, actions.top - 2));
-			highlight.style.left = `${left}px`; highlight.style.top = `${header.top}px`;
-			highlight.style.width = `${right - left}px`; highlight.style.height = `${Math.max(0, bottom - header.top)}px`;
-			markFixedConfigs();
-		};
-		const inside = (event: MouseEvent) => {
-			const rect = highlight.getBoundingClientRect();
-			return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
-		};
-		const insidePoint = (clientX: number, clientY: number) => {
-			const rect = highlight.getBoundingClientRect();
-			return clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-		};
-		position();
-		let positionFrame: number | null = null;
-		const queuePosition = () => {
-			if (positionFrame !== null) return;
-			positionFrame = window.requestAnimationFrame(() => { positionFrame = null; position(); });
-		};
-		const resize = new ResizeObserver(queuePosition); resize.observe(decoration.files); resize.observe(decoration.bookActions); resize.observe(decoration.header);
-		const mutations = new MutationObserver(queuePosition); mutations.observe(decoration.files, { childList: true, subtree: true });
-		// Native virtual folders animate their height without resizing the scroll container.
-		const settled = () => queuePosition();
-		decoration.files.addEventListener('transitionend', settled);
-		doc.addEventListener('scroll', queuePosition, true); doc.defaultView?.addEventListener('resize', queuePosition);
-		let sourcePath: string | null = null, sourceRow: HTMLElement | null = null, targetRow: HTMLElement | null = null;
-		let dragCollapsedModel: Record<string, unknown> | null = null;
-		let origin: { x: number; y: number } | null = null, dragging = false, expandTimer: number | null = null;
-		const rowAt = (event: MouseEvent) => inside(event) ? doc.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('.nav-file-title, .nav-folder-title') ?? null : null;
-		const isArrow = (target: Element | null) => !!target?.closest('.nav-folder-collapse-indicator, .collapse-icon') && belongs(rowPath(target));
-		const controls = (target: Element | null) => !!target?.closest('.scope-tabs-book-header') && root.contains(target);
-		const clearTarget = () => {
-			targetRow?.removeClass('scope-tabs-order-hover');
-			targetRow?.removeAttribute('data-scope-tabs-order-drop');
-			targetRow?.style.removeProperty('--scope-tabs-order-drop-indent');
-			targetRow = null;
-		};
-		const cancelDrag = () => {
-			if (dragCollapsedModel) collapse(dragCollapsedModel, false);
-			dragCollapsedModel = null;
-			sourceRow?.removeClass('scope-tabs-order-selected'); sourceRow = null; sourcePath = null; origin = null; dragging = false; clearTarget();
-			if (expandTimer !== null) window.clearTimeout(expandTimer); expandTimer = null;
-		};
-		const click = (event: MouseEvent) => {
-			const element = getEventElement(event);
-			if (controls(element) || inside(event) && isArrow(element)) return;
-			event.preventDefault(); event.stopImmediatePropagation();
-			if (!inside(event)) { this.exitOrdering(); this.refreshExplorer(); }
-		};
-		const key = (event: KeyboardEvent) => {
-			if (controls(getEventElement(event)) && (event.key === 'Enter' || event.key === ' ' || event.key === 'Tab')) return;
-			event.preventDefault(); event.stopImmediatePropagation();
-			if (event.key === 'Escape') { this.exitOrdering(); this.refreshExplorer(); }
-		};
-		const wheel = (event: WheelEvent) => {
-			if (inside(event)) return;
-			event.preventDefault(); event.stopImmediatePropagation();
-		};
-		const touchmove = (event: TouchEvent) => {
-			const touch = event.touches.item(0);
-			if (touch && insidePoint(touch.clientX, touch.clientY)) return;
-			event.preventDefault(); event.stopImmediatePropagation();
-		};
-		const start = (event: PointerEvent) => {
-			const element = getEventElement(event);
-			if (controls(element) || inside(event) && isArrow(element)) return;
-			event.preventDefault(); event.stopImmediatePropagation();
-			if (!inside(event)) return;
-			const row = rowAt(event), path = rowPath(row);
-			if (event.button !== 0 || !belongs(path) || path === book.id) return;
-			if (isFixedConfig(path)) {
-				new Notice(`${configName} stays with its folder and cannot be reordered.`);
-				return;
-			}
-			sourcePath = path; sourceRow = row; sourceRow?.addClass('scope-tabs-order-selected');
-			origin = { x: event.clientX, y: event.clientY }; dragging = false;
-		};
-		const placement = (event: MouseEvent, row: HTMLElement): 'before' | 'after' | 'inside' => {
-			const bounds = row.getBoundingClientRect(), ratio = (event.clientY - bounds.top) / bounds.height;
-			return this.plugin.app.vault.getFolderByPath(rowPath(row)) && ratio >= 0.25 && ratio <= 0.75 ? 'inside' : ratio < 0.5 ? 'before' : 'after';
-		};
-		const over = (event: PointerEvent) => {
-			if (!dragging && origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 5) {
-				dragging = true;
-				const sourceModel = sourcePath ? models[sourcePath] : null;
-				if (isUnknownRecord(sourceModel) && sourceModel.file instanceof TFolder) {
-					dragCollapsedModel = sourceModel;
-					collapse(sourceModel, true);
-				}
-			}
-			let row = rowAt(event);
-			const hoveredPath = rowPath(row);
-			if (!belongs(hoveredPath) || (sourcePath && (hoveredPath === sourcePath || hoveredPath.startsWith(`${sourcePath}/`)))) row = null;
-			if (row !== targetRow) {
-				clearTarget(); targetRow = row; row?.addClass('scope-tabs-order-hover');
-				const content = row?.querySelector<HTMLElement>('.nav-file-title-content, .nav-folder-title-content');
-				if (row && content) row.style.setProperty('--scope-tabs-order-drop-indent', `${Math.max(0, Math.round(content.getBoundingClientRect().left - row.getBoundingClientRect().left))}px`);
-				if (expandTimer !== null) window.clearTimeout(expandTimer);
-				if (dragging && row?.hasClass('nav-folder-title')) {
-					const model = models[rowPath(row)];
-					if (isUnknownRecord(model)) expandTimer = window.setTimeout(() => collapse(model, false), 600);
-				}
-			}
-			if (!sourcePath) return;
-			event.preventDefault(); event.stopImmediatePropagation();
-			if (dragging && row) row.setAttr('data-scope-tabs-order-drop', placement(event, row));
-		};
-		const drop = (event: PointerEvent) => {
-			const source = sourcePath, row = rowAt(event), path = rowPath(row), moved = dragging;
-			cancelDrag(); if (!source) return;
-			event.preventDefault(); event.stopImmediatePropagation();
-			if (!moved || !row || !inside(event) || !belongs(path)) return;
-			void this.plugin.bookOrder.move(book.id, source, path, placement(event, row)).then(() => { this.refreshExplorer(); position(); }).catch((error: unknown) => {
-				console.error(error); new Notice('Could not move this item. Check for an existing file with the same name.');
-			});
-		};
-		doc.addEventListener('click', click, true); doc.addEventListener('dblclick', click, true); doc.addEventListener('contextmenu', click, true);
-		doc.addEventListener('keydown', key, true); doc.addEventListener('pointerdown', start, true); doc.addEventListener('pointermove', over, true); doc.addEventListener('pointerup', drop, true); doc.addEventListener('pointercancel', cancelDrag, true);
-		doc.addEventListener('wheel', wheel, { capture: true, passive: false }); doc.addEventListener('touchmove', touchmove, { capture: true, passive: false });
-		this.stopOrdering = () => {
-			decoration.files.removeEventListener('transitionend', settled);
-			if (positionFrame !== null) window.cancelAnimationFrame(positionFrame);
-			positionFrame = null;
-			cancelDrag(); resize.disconnect(); mutations.disconnect(); highlight.remove(); root.removeClass('scope-tabs-ordering'); root.style.removeProperty('--scope-tabs-order-color');
-			decoration.files.querySelectorAll<HTMLElement>('.scope-tabs-order-fixed').forEach(row => { row.removeClass('scope-tabs-order-fixed'); row.removeAttribute('aria-disabled'); });
-			decoration.files.querySelectorAll('.scope-tabs-order-direction-override').forEach(label => label.remove());
-			doc.removeEventListener('scroll', queuePosition, true); doc.defaultView?.removeEventListener('resize', queuePosition);
-			doc.removeEventListener('click', click, true); doc.removeEventListener('dblclick', click, true); doc.removeEventListener('contextmenu', click, true);
-			doc.removeEventListener('keydown', key, true); doc.removeEventListener('pointerdown', start, true); doc.removeEventListener('pointermove', over, true); doc.removeEventListener('pointerup', drop, true); doc.removeEventListener('pointercancel', cancelDrag, true);
-			doc.removeEventListener('wheel', wheel, true); doc.removeEventListener('touchmove', touchmove, true);
-			for (const [model, collapsed] of folderStates) collapse(model, collapsed);
-		};
-		this.refreshExplorer(); queuePosition();
-	}
-
 	/** Optional virtual-tree adapter: preserve other plugins' filters, and restore our exact patch. */
 	private applyExplorerOrdering(root: HTMLElement): void {
 		const view: unknown = this.plugin.app.workspace.getLeavesOfType('file-explorer').find((leaf) => leaf.view.containerEl === root)?.view;
@@ -1453,10 +1256,6 @@ export class DecorationController {
 					const models = view.fileItems;
 					items = folder.children.map(child => models[child.path]).filter(Boolean);
 				} else items = items.filter(item => !isUnknownRecord(item) || !(item.file instanceof TAbstractFile) || !plugin.bookIgnore.isHidden(item.file));
-				if (!plugin.bookOrder.isEnabled(bookId)) {
-					return [...items].sort((a: unknown, b: unknown) => isUnknownRecord(a) && isUnknownRecord(b) && a.file instanceof TAbstractFile && b.file instanceof TAbstractFile
-						? pinConfigNote(plugin, folder, a.file, b.file) : 0);
-				}
 				return [...items].sort((a: unknown, b: unknown) => isUnknownRecord(a) && isUnknownRecord(b) && a.file instanceof TAbstractFile && b.file instanceof TAbstractFile
 					? plugin.bookOrder.compare(a.file, b.file, plugin.bookOrder.getType(folder)) : 0);
 			};

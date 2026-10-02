@@ -1,13 +1,12 @@
 import { TAbstractFile, TFile, TFolder } from 'obsidian';
 import type ScopeTabsPlugin from './main';
 import type { BookScope } from './types';
-import { addConfigComments, ensurePluginFrontmatter, readPluginFrontmatter, updateConfigFrontmatter, writePluginFrontmatter, type ConfigFrontmatterContext } from './config-frontmatter';
+import { ensurePluginFrontmatter, readPluginFrontmatter, updateConfigFrontmatter, writePluginFrontmatter, type ConfigFrontmatterContext } from './config-frontmatter';
 import { matchDatePatternInFilename } from './date-pattern';
 
-export type OrderingType = 'manual' | 'alphabetical' | 'creation-date' | 'properties';
+export type OrderingType = 'alphabetical' | 'creation-date' | 'properties';
 export type OrderingDirection = 'ascending' | 'descending';
-export const ORDERING_TYPES: OrderingType[] = ['manual', 'alphabetical', 'creation-date', 'properties'];
-export const FILE_ORDER_PROPERTY = 'fileOrder';
+export const ORDERING_TYPES: OrderingType[] = ['alphabetical', 'creation-date', 'properties'];
 
 /** Vault mutations and ordering policy; explorer compatibility belongs in decorations. */
 export class BookOrderService {
@@ -15,6 +14,7 @@ export class BookOrderService {
 	private metadata = new Map<string, Record<string, unknown>>();
 	private configs = new Map<string, Promise<TFile>>();
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
+	whenIdle(): Promise<void> { return this.queue; }
 
 	private configPath(folder: TFolder): string {
 		return folder.isRoot() ? 'index.md' : `${folder.path}/${this.plugin.settings.configFileBaseName}.md`;
@@ -46,14 +46,17 @@ export class BookOrderService {
 	private async createOrUpdateConfig(folder: TFolder): Promise<TFile> {
 		const path = this.configPath(folder);
 		const existing = this.plugin.app.vault.getAbstractFileByPath(path);
-		const defaultOrder = this.initialOrder(folder);
+		if (this.plugin.frontmatterMaintenance?.paused) {
+			if (existing instanceof TFile) return existing;
+			if (existing) throw new Error(`A folder occupies ${path}`);
+			return this.plugin.app.vault.create(path, '');
+		}
 		if (existing instanceof TFile) {
 			await this.update(existing, (fm, context) => {
 				fm.aliases = [folder.name];
 				for (const key of [this.plugin.settings.colorFrontmatterProperty, this.plugin.settings.tabTextFrontmatterProperty]) {
 					if (Object.prototype.hasOwnProperty.call(fm, key) && !context.ownedPlainKeys.has(key)) ensurePluginFrontmatter(fm, key, fm[key], context.ownedPlainKeys);
 				}
-				writePluginFrontmatter(fm, FILE_ORDER_PROPERTY, reconcileFileOrder(readPluginFrontmatter(fm, FILE_ORDER_PROPERTY), this.childNames(folder), existing.name), context.ownedPlainKeys);
 				const forced = readPluginFrontmatter(fm, 'forcedOrderingType');
 				if (forced !== false && !isOrderingType(forced)) writePluginFrontmatter(fm, 'forcedOrderingType', false, context.ownedPlainKeys);
 				const forcedDirection = readPluginFrontmatter(fm, 'forcedOrderingDirection');
@@ -65,10 +68,9 @@ export class BookOrderService {
 			return existing;
 		}
 		if (existing) throw new Error(`A folder occupies ${path}`);
-		const created = await this.plugin.app.vault.create(path, addConfigComments(`---\n${FILE_ORDER_PROPERTY}:\n${defaultOrder.map(name => `  - ${JSON.stringify(name)}`).join('\n')}\nforcedOrderingType: false\nforcedOrderingDirection: false\norderingType: alphabetical\n${folder.parent?.isRoot() ? 'tabInsertDirection: false\nbookNoteOpenMode: false\n' : ''}---\n`));
+		const created = await this.plugin.app.vault.create(path, '');
 		await this.update(created, (fm, context) => {
 			fm.aliases = [folder.name];
-			writePluginFrontmatter(fm, FILE_ORDER_PROPERTY, defaultOrder, context.ownedPlainKeys);
 			writePluginFrontmatter(fm, 'forcedOrderingType', false, context.ownedPlainKeys);
 			writePluginFrontmatter(fm, 'forcedOrderingDirection', false, context.ownedPlainKeys);
 			writePluginFrontmatter(fm, 'orderingType', 'alphabetical', context.ownedPlainKeys);
@@ -99,10 +101,10 @@ export class BookOrderService {
 	}
 
 	syncConfig(file: TFile): Promise<void> {
+		if (this.plugin.frontmatterMaintenance?.paused) return Promise.resolve();
 		if (!file.parent || file.parent.isRoot() || file.path !== this.configPath(file.parent)) return Promise.resolve();
 		return this.enqueue(async () => {
 			if (!this.hasExpectedAlias(file)) await this.createOrUpdateConfig(file.parent!);
-			await this.syncFolderOrder(file.parent!, file);
 		});
 	}
 
@@ -114,11 +116,6 @@ export class BookOrderService {
 			[this.plugin.settings.colorFrontmatterProperty]: 'color',
 			[this.plugin.settings.tabTextFrontmatterProperty]: 'tab-text-bg',
 		} });
-	}
-
-	isEnabled(bookId: string): boolean {
-		const folder = this.plugin.app.vault.getFolderByPath(bookId);
-		return !!folder && this.value(folder, 'orderingEnabled') === true;
 	}
 
 	getType(folder: TFolder): OrderingType {
@@ -139,16 +136,7 @@ export class BookOrderService {
 			return leftConfig ? -1 : 1;
 		}
 		let result = 0;
-		if (type === 'manual') {
-			const folder = left.parent === right.parent ? left.parent : null;
-			const order = folder ? normalizeStoredOrder(this.value(folder, FILE_ORDER_PROPERTY)) : [];
-			const leftIndex = order.indexOf(left.name), rightIndex = order.indexOf(right.name);
-			if (leftIndex !== rightIndex) {
-				if (leftIndex < 0) result = 1;
-				else if (rightIndex < 0) result = -1;
-				else result = leftIndex - rightIndex;
-			}
-		} else if (type === 'creation-date') {
+		if (type === 'creation-date') {
 			const leftDate = this.creationDateValue(left), rightDate = this.creationDateValue(right);
 			if (leftDate !== null && rightDate !== null) result = leftDate - rightDate;
 			else if (leftDate !== null) result = -1;
@@ -199,7 +187,8 @@ export class BookOrderService {
 			const parsed = parseDateStamp(value);
 			if (parsed !== null) return parsed;
 		}
-		return null;
+		const timestamp = item instanceof TFile ? item.stat.ctime : null;
+		return typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
 	}
 
 	private creationDateValue(item: TAbstractFile): number | null { return this.dateOrderingValue(item, true); }
@@ -216,10 +205,11 @@ export class BookOrderService {
 		const incoming = new Set<string>();
 		for (const item of items) {
 			const directNext = this.resolveArticleTarget(item, this.values(item)[nextKey]);
-			if (directNext && itemPaths.has(directNext)) { next.set(item.path, directNext); incoming.add(directNext); continue; }
+			if (directNext && directNext !== item.path && itemPaths.has(directNext)) { next.set(item.path, directNext); }
 			const previous = this.resolveArticleTarget(item, this.values(item)[previousKey]);
-			if (previous && itemPaths.has(previous)) { next.set(previous, item.path); incoming.add(item.path); }
+			if (previous && previous !== item.path && itemPaths.has(previous) && !next.has(previous)) next.set(previous, item.path);
 		}
+		for (const target of next.values()) incoming.add(target);
 		const fallback = (left: TAbstractFile, right: TAbstractFile): number => {
 			const a = this.dateOrderingValue(left), b = this.dateOrderingValue(right);
 			if (a !== null && b !== null && a !== b) return a - b;
@@ -252,47 +242,6 @@ export class BookOrderService {
 		return target?.path ?? null;
 	}
 
-	async prepare(book: BookScope): Promise<void> {
-		if (this.isPrepared(book)) return;
-		return this.enqueue(async () => {
-			if (this.isPrepared(book)) return;
-			const root = this.plugin.app.vault.getFolderByPath(book.folderPath);
-			if (!root) return;
-			await this.prepareFolder(root);
-			const config = await this.ensureConfig(root);
-			if (this.value(root, 'orderingEnabled') === true && isOrderingType(this.value(root, 'orderingType'))) return;
-			await this.update(config, (fm, context) => {
-				writePluginFrontmatter(fm, 'orderingEnabled', true, context.ownedPlainKeys);
-				if (!isOrderingType(readPluginFrontmatter(fm, 'orderingType'))) writePluginFrontmatter(fm, 'orderingType', 'alphabetical', context.ownedPlainKeys);
-			});
-		});
-	}
-
-	private isPrepared(book: BookScope): boolean {
-		const root = this.plugin.app.vault.getFolderByPath(book.folderPath);
-		return !!root && this.value(root, 'orderingEnabled') === true && this.isPreparedFolder(root);
-	}
-
-	private isPreparedFolder(folder: TFolder): boolean {
-		const config = this.plugin.app.vault.getFileByPath(this.configPath(folder));
-		if (!config) return false;
-		const stored = this.value(folder, FILE_ORDER_PROPERTY);
-		if (!sameOrder(normalizeStoredOrder(stored), reconcileFileOrder(stored, this.childNames(folder), config.name))) return false;
-		const forced = this.value(folder, 'forcedOrderingType');
-		if (forced !== false && !isOrderingType(forced)) return false;
-		const forcedDirection = this.value(folder, 'forcedOrderingDirection');
-		if (forcedDirection !== false && forcedDirection !== 'ascending' && forcedDirection !== 'descending') return false;
-		if (!isOrderingType(this.value(folder, 'orderingType'))) return false;
-		if (folder.parent?.isRoot() && this.value(folder, 'tabInsertDirection') === undefined) return false;
-		if (folder.parent?.isRoot() && this.value(folder, 'bookNoteOpenMode') === undefined) return false;
-		for (const child of folder.children) {
-			if (child instanceof TFolder && !this.isPreparedFolder(child)) return false;
-			if (child instanceof TFile && child.extension === 'md'
-				&& typeof this.value(child, 'creation-date') !== 'string') return false;
-		}
-		return true;
-	}
-
 	async reconcileExistingConfigs(book: BookScope): Promise<void> {
 		return this.enqueue(async () => {
 			const root = this.plugin.app.vault.getFolderByPath(book.folderPath);
@@ -305,21 +254,8 @@ export class BookOrderService {
 		for (const child of folder.children) if (child instanceof TFolder) await this.reconcileExistingFolder(child);
 	}
 
-	private async prepareFolder(folder: TFolder): Promise<void> {
-		const config = await this.ensureConfig(folder);
-		await this.syncFolderOrder(folder, config);
-		for (const child of [...folder.children]) if (child instanceof TFolder) await this.prepareFolder(child);
-		for (const file of folder.children) {
-			if (!(file instanceof TFile) || file.extension !== 'md') continue;
-			const created = dateStamp(file.stat.ctime);
-			if (this.value(file, 'creation-date') === created) continue;
-			await this.update(file, (fm, context) => {
-				writePluginFrontmatter(fm, 'creation-date', created, context.ownedPlainKeys);
-			});
-		}
-	}
-
 	async refreshCreationDates(): Promise<void> {
+		if (this.plugin.frontmatterMaintenance?.paused) return;
 		for (const file of this.plugin.app.vault.getMarkdownFiles()) {
 			const created = dateStamp(file.stat.ctime);
 			if (this.value(file, 'creation-date') === created) continue;
@@ -330,6 +266,7 @@ export class BookOrderService {
 	}
 
 	syncCreationDate(file: TFile): Promise<void> {
+		if (this.plugin.frontmatterMaintenance?.paused) return Promise.resolve();
 		if (file.extension !== 'md') return Promise.resolve();
 		const created = dateStamp(file.stat.ctime);
 		if (this.value(file, 'creation-date') === created) return Promise.resolve();
@@ -338,15 +275,9 @@ export class BookOrderService {
 		}));
 	}
 
-	async syncStructure(file: TAbstractFile, oldPath?: string): Promise<void> {
+	async syncStructure(file: TAbstractFile): Promise<void> {
+		if (this.plugin.frontmatterMaintenance?.paused) return;
 		return this.enqueue(async () => {
-			const paths = new Set<string>();
-			paths.add(parentPath(file.path));
-			if (oldPath) paths.add(parentPath(oldPath));
-			for (const path of paths) {
-				const folder = this.plugin.app.vault.getFolderByPath(path);
-				if (folder && this.isBookFolder(folder)) await this.syncFolderOrder(folder);
-			}
 			if (file instanceof TFile && file.extension === 'md' && this.plugin.app.vault.getAbstractFileByPath(file.path) === file) {
 				const created = dateStamp(file.stat.ctime);
 				await this.update(file, (fm, context) => {
@@ -354,17 +285,8 @@ export class BookOrderService {
 				});
 			}
 			if (file instanceof TFolder && this.plugin.app.vault.getAbstractFileByPath(file.path) === file && this.isBookFolder(file)) {
-				const bookId = file.path.split('/')[0]!;
 				if (this.plugin.app.vault.getFileByPath(this.configPath(file))) await this.ensureConfig(file);
-				if (this.isEnabled(bookId)) await this.prepareFolder(file);
 			}
-		});
-	}
-
-	async syncDeleted(path: string): Promise<void> {
-		return this.enqueue(async () => {
-			const folder = this.plugin.app.vault.getFolderByPath(parentPath(path));
-			if (folder && this.isBookFolder(folder)) await this.syncFolderOrder(folder);
 		});
 	}
 
@@ -375,102 +297,6 @@ export class BookOrderService {
 			writePluginFrontmatter(fm, 'orderingType', type, context.ownedPlainKeys);
 			writePluginFrontmatter(fm, 'forcedOrderingType', false, context.ownedPlainKeys);
 		}));
-	}
-
-	async move(bookId: string, sourcePath: string, targetPath: string, placement: 'before' | 'after' | 'inside'): Promise<void> {
-		return this.enqueue(async () => {
-			const vault = this.plugin.app.vault;
-			const source = vault.getAbstractFileByPath(sourcePath), target = vault.getAbstractFileByPath(targetPath);
-			if (!source || !target || source === target || !source.path.startsWith(`${bookId}/`) || !(target.path === bookId || target.path.startsWith(`${bookId}/`))) return;
-			if (this.isConfigNote(source)) throw new Error('Folder config notes cannot be moved while Root Books Tabs is enabled.');
-			const destination = placement === 'inside' && target instanceof TFolder ? target : target.parent;
-			if (!destination || destination.isRoot() || destination === source || destination.path.startsWith(`${source.path}/`)) return;
-			const sourceParent = source.parent;
-			if (!sourceParent) return;
-			const targetName = target.name;
-			let targetAfterMove: TAbstractFile | null = target;
-			if (sourceParent !== destination) {
-				const collision = vault.getAbstractFileByPath(`${destination.path}/${source.name}`);
-				if (collision && collision !== source) {
-					await this.swapFiles(bookId, source, collision);
-					if (target === collision) targetAfterMove = source;
-				} else {
-					await this.plugin.app.fileManager.renameFile(source, `${destination.path}/${source.name}`);
-				}
-				await this.syncFolderOrder(sourceParent);
-				await this.syncFolderOrder(destination);
-			}
-
-			const currentType = this.getType(destination);
-			const siblings = [...destination.children].sort((a, b) => this.compare(a, b, currentType));
-			const sourceIndex = siblings.indexOf(source);
-			if (sourceIndex >= 0) siblings.splice(sourceIndex, 1);
-			let index = siblings.length;
-			if (placement !== 'inside') {
-				const currentTarget = targetAfterMove && targetAfterMove.parent === destination
-					? targetAfterMove
-					: siblings.find(item => item.name === targetName) ?? null;
-				const targetIndex = currentTarget ? siblings.indexOf(currentTarget) : -1;
-				if (targetIndex >= 0) index = targetIndex + (placement === 'after' ? 1 : 0);
-			}
-			siblings.splice(Math.max(0, index), 0, source);
-			const visualOrder = siblings.map(item => item.name);
-			await this.writeOrder(destination, this.getDirection(destination) === 'descending' ? visualOrder.reverse() : visualOrder);
-			await this.update(await this.ensureConfig(destination), (fm, context) => { writePluginFrontmatter(fm, 'forcedOrderingType', 'manual', context.ownedPlainKeys); });
-		});
-	}
-
-	private async swapFiles(bookId: string, source: TAbstractFile, collision: TAbstractFile): Promise<void> {
-		const sourcePath = source.path, collisionPath = collision.path;
-		let attempt = 0, temporaryPath = '';
-		do temporaryPath = `${bookId}/.scope-tabs-swap-${Date.now()}-${attempt++}-${collision.name}`;
-		while (this.plugin.app.vault.getAbstractFileByPath(temporaryPath));
-		await this.plugin.app.fileManager.renameFile(collision, temporaryPath);
-		try {
-			await this.plugin.app.fileManager.renameFile(source, collisionPath);
-			try {
-				await this.plugin.app.fileManager.renameFile(collision, sourcePath);
-			} catch (error) {
-				await this.plugin.app.fileManager.renameFile(source, sourcePath);
-				await this.plugin.app.fileManager.renameFile(collision, collisionPath);
-				throw error;
-			}
-		} catch (error) {
-			if (collision.path === temporaryPath) await this.plugin.app.fileManager.renameFile(collision, collisionPath);
-			throw error;
-		}
-	}
-
-	private async syncFolderOrder(folder: TFolder, config?: TFile): Promise<void> {
-		if (!this.isBookFolder(folder)) return;
-		const note = config ?? this.plugin.app.vault.getFileByPath(this.configPath(folder));
-		if (!note) return;
-		const names = this.childNames(folder);
-		const stored = this.value(folder, FILE_ORDER_PROPERTY);
-		const current = normalizeStoredOrder(stored);
-		const next = reconcileFileOrder(stored, names, note.name);
-		if (sameOrder(current, next)) return;
-		await this.update(note, (fm, context) => {
-			writePluginFrontmatter(fm, FILE_ORDER_PROPERTY, next, context.ownedPlainKeys);
-		});
-	}
-
-	private async writeOrder(folder: TFolder, requested: string[]): Promise<void> {
-		const note = await this.ensureConfig(folder);
-		const available = this.childNames(folder);
-		const valid = new Set(available);
-		const order = [...new Set(requested)].filter(name => valid.has(name));
-		for (const name of available) if (!order.includes(name)) order.push(name);
-		await this.update(note, (fm, context) => { writePluginFrontmatter(fm, FILE_ORDER_PROPERTY, order, context.ownedPlainKeys); });
-	}
-
-	private childNames(folder: TFolder): string[] {
-		const configName = `${this.plugin.settings.configFileBaseName}.md`;
-		return [...new Set(folder.children.map(child => child.name).filter(name => name !== configName))].sort(compareNames);
-	}
-
-	private initialOrder(folder: TFolder): string[] {
-		return this.childNames(folder);
 	}
 
 	private isBookFolder(folder: TFolder): boolean {
@@ -490,33 +316,6 @@ export function isOrderingType(value: unknown): value is OrderingType {
 	return ORDERING_TYPES.includes(value as OrderingType);
 }
 
-export function reconcileFileOrder(value: unknown, availableNames: string[], configName: string): string[] {
-	const available = [...new Set(availableNames)].filter(name => name !== configName).sort(compareNames);
-	if (!Array.isArray(value)) return available;
-	const valid = new Set(available);
-	const order = normalizeStoredOrder(value).filter(name => valid.has(name));
-	for (const name of available) {
-		if (order.includes(name)) continue;
-		const alphabeticalIndex = available.indexOf(name);
-		const following = available.slice(alphabeticalIndex + 1).find(candidate => order.includes(candidate));
-		if (following) order.splice(order.indexOf(following), 0, name);
-		else {
-			const preceding = available.slice(0, alphabeticalIndex).reverse().find(candidate => order.includes(candidate));
-			if (preceding) order.splice(order.indexOf(preceding) + 1, 0, name);
-			else order.push(name);
-		}
-	}
-	return order;
-}
-
-function normalizeStoredOrder(value: unknown): string[] {
-	return Array.isArray(value) ? [...new Set(value.filter((entry): entry is string => typeof entry === 'string'))] : [];
-}
-
-function sameOrder(left: string[], right: string[]): boolean {
-	return left.length === right.length && left.every((name, index) => name === right[index]);
-}
-
 function compareAlphabetical(left: TAbstractFile, right: TAbstractFile): number {
 	if ((left instanceof TFolder) !== (right instanceof TFolder)) return left instanceof TFolder ? -1 : 1;
 	return compareNames(left.name, right.name);
@@ -524,10 +323,6 @@ function compareAlphabetical(left: TAbstractFile, right: TAbstractFile): number 
 
 function compareNames(left: string, right: string): number {
 	return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
-}
-
-function parentPath(path: string): string {
-	return path.split('/').slice(0, -1).join('/');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

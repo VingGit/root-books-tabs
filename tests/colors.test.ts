@@ -1,3 +1,4 @@
+import { readPluginFrontmatter } from '../src/config-frontmatter';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { BookColorService, validateColorKeys } from '../src/colors';
@@ -44,8 +45,8 @@ test('config migration moves both color keys and restores defaults without losin
 	assert.equal(f.excluded.path, 'templates/index.md');
 	assert.equal(f.fm.color, '#abcdef');
 	assert.equal(f.fm['tab-text-bg'], 'black');
-	assert.equal(f.fm.accent, '#abcdef');
-	assert.equal(f.fm.ink, 'black');
+	assert.equal(readPluginFrontmatter(f.fm, 'accent'), '#abcdef');
+	assert.equal(readPluginFrontmatter(f.fm, 'ink'), 'black');
 	assert.deepEqual(f.fm.unrelated, ['preserve']);
 	await f.service.renameConfiguration('index', 'color', 'tab-text-bg');
 	assert.equal(f.file.path, 'Book/index.md');
@@ -63,7 +64,7 @@ test('color keys reject aliases and reserved metadata before modifying notes', a
 	await f.service.renameConfiguration('config', 'accent', 'ink');
 	assert.equal(f.fm.color, '#abcdef');
 	assert.equal(f.fm.ink, 'existing');
-	assert.equal(f.fm['book-tabs-ink'], 'black');
+	assert.equal(readPluginFrontmatter(f.fm, 'ink'), 'black');
 });
 
 test('failed settings save rolls back renamed notes and both color properties', async () => {

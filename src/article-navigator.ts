@@ -314,7 +314,7 @@ function normalizeCompleteKeys(candidate: unknown): ArticleNavigatorKeys | null 
 }
 
 function normalizeKey(value: unknown): string | null {
-	return typeof value === 'string' && value.trim() ? value.trim() : null;
+	return typeof value === 'string' && value.trim() && value.trim() !== 'book-tabs' ? value.trim() : null;
 }
 
 function keysAreDistinct(keys: ArticleNavigatorKeys): boolean {

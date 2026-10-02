@@ -3,8 +3,10 @@ import { TFile, TFolder, parseYaml, getFrontMatterInfo } from 'obsidian';
 import type ScopeTabsPlugin from './main';
 import { DEFAULT_SETTINGS, migrateSettings } from './settings-model';
 import type { ScopeTabsSettings } from './types';
+import { BOOK_TABS_SECTION, frontmatterSections } from './frontmatter-section';
 
 const LOCAL_KEYS = new Set(['manualColors', 'manualTabTextColors', 'colorMode', 'selectedBookId', 'defaultStartupBookId', 'defaultStartupNotePath', 'bookNoteOpenModeOverrides', 'tabCustomCss', 'indexMoveDecision', 'frontmatterDisplayMode']);
+export const PORTABLE_SETTING_KEYS = Object.keys(DEFAULT_SETTINGS).filter(key => !LOCAL_KEYS.has(key));
 const ROOT_ONLY_KEYS = ['isFreshClone', 'freshCloneOpeningPath'] as const;
 const OBSOLETE_ROOT_KEYS = ['showGridBoundaries', 'gridBoundaryThickness', 'hideNewBookIndex', 'configNotePosition', 'createBookIndex'] as const;
 const LEGACY_TEMPLATE_ROOT_KEYS = ['template-file-prefix', 'template-file-date', 'template-file-path', 'template-file-applied-To', 'template-file-applied-to'] as const;
@@ -29,6 +31,7 @@ export class VaultConfigService {
 	private savedSettings: ScopeTabsSettings | null = null;
 	private pending = new Map<string, { value: unknown }>();
 	constructor(private readonly plugin: ScopeTabsPlugin) {}
+	whenIdle(): Promise<void> { return this.queue; }
 
 	private enqueue<T>(operation: () => Promise<T>): Promise<T> {
 		const result = this.queue.then(operation);
@@ -45,12 +48,15 @@ export class VaultConfigService {
 		const existing = vault.getAbstractFileByPath('index.md');
 		if (existing && !(existing instanceof TFile)) throw new Error('Root index.md is a folder.');
 		const file = existing ?? await vault.create('index.md', '');
+		if (this.plugin.frontmatterMaintenance?.paused) return file;
 		const settings = this.plugin.settings;
 		await this.write(file, (fm, context) => {
 			fm.aliases = [vault.getName()];
 			// Folder order belongs to non-root config notes. Preserve plain user
 			// collisions, while removing any plugin-owned copies at the vault root.
 			for (const key of ['fileOrder', 'orderingEnabled', 'orderingType', 'forcedOrderingType', 'forcedOrderingDirection']) {
+				const section = frontmatterSections.read(fm);
+				if (section) delete section[key];
 				delete fm[prefixedConfigKey(key)];
 				if (context.ownedPlainKeys.has(key)) delete fm[key];
 			}
@@ -68,6 +74,8 @@ export class VaultConfigService {
 				if (!LOCAL_KEYS.has(key)) ensurePluginFrontmatter(fm, storageKey(key), value, context.ownedPlainKeys);
 			}
 			for (const key of LEGACY_TEMPLATE_ROOT_KEYS) {
+				const section = frontmatterSections.read(fm);
+				if (section) delete section[key];
 				delete fm[prefixedConfigKey(key)];
 				if (context.ownedPlainKeys.has(key)) delete fm[key];
 			}
@@ -167,6 +175,10 @@ export class VaultConfigService {
 }
 
 function logicalRootValues(raw: Record<string, unknown>): Record<string, unknown> {
+	const section = frontmatterSections.read(raw);
+	raw = { ...raw, ...section };
+	delete raw[BOOK_TABS_SECTION];
+	for (const key of Object.keys(section ?? {})) delete raw[prefixedConfigKey(key)];
 	const values = { ...raw };
 	for (const key of OBSOLETE_ROOT_KEYS) {
 		delete values[key];

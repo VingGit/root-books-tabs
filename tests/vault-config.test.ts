@@ -1,11 +1,11 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
+import { readPluginFrontmatter } from '../src/config-frontmatter';
 import { VaultConfigService } from '../src/vault-config';
 import { DEFAULT_SETTINGS } from '../src/settings-model';
 import { TFile, TFolder, TAbstractFile } from './obsidian-mock';
 
-const managed = (fm: Record<string, unknown>, key: string): unknown =>
-	Object.prototype.hasOwnProperty.call(fm, `book-tabs-${key}`) ? fm[`book-tabs-${key}`] : fm[key];
+const managed = (fm: Record<string, unknown>, key: string): unknown => readPluginFrontmatter(fm, key);
 
 function fixture(initial: Record<string, unknown> = {}, initialContent?: string) {
 	const root = new TFolder('');
@@ -58,16 +58,16 @@ test('root config preserves fields, local preferences, and pending edits during 
 	await f.service.ensureRoot();
 	f.plugin.settings.selectedBookId = 'Local';
 	f.plugin.settings.showBookLabel = false;
-	f.fm['book-tabs-colorTabs'] = false;
+	(f.fm['book-tabs'] as Record<string, unknown>).colorTabs = false;
 	await f.service.load();
 	assert.equal(f.plugin.settings.showBookLabel, false);
 	assert.equal(f.plugin.settings.colorTabs, false);
 	assert.equal(f.plugin.settings.selectedBookId, 'Local');
 	await f.service.saveSettings();
 	assert.equal(f.fm.showBookLabel, true);
-	assert.equal(f.fm['book-tabs-showBookLabel'], false);
+	assert.equal(managed(f.fm, 'showBookLabel'), false);
 	assert.equal(f.fm.colorTabs, true);
-	assert.equal(f.fm['book-tabs-colorTabs'], false);
+	assert.equal(managed(f.fm, 'colorTabs'), false);
 	assert.deepEqual(f.fm.custom, { keep: 1 });
 	assert.equal('selectedBookId' in f.fm, false);
 });
@@ -76,23 +76,23 @@ test('plain collisions are preserved while prefixed settings take precedence and
 	const f = fixture({ showBookLabel: 'user value', 'book-tabs-colorTabs': false, custom: 'keep' });
 	await f.service.ensureRoot();
 	assert.equal(f.fm.showBookLabel, 'user value');
-	assert.equal(f.fm['book-tabs-showBookLabel'], true);
+	assert.equal(managed(f.fm, 'showBookLabel'), true);
 	assert.equal(f.plugin.settings.showBookLabel, true);
 	assert.equal(f.plugin.settings.colorTabs, false);
 	await f.service.set('showBookLabel', false);
 	assert.equal(f.fm.showBookLabel, 'user value');
-	assert.equal(f.fm['book-tabs-showBookLabel'], false);
+	assert.equal(managed(f.fm, 'showBookLabel'), false);
 	assert.equal(f.fm.custom, 'keep');
 });
 
-test('generated help marks legacy plain fields as plugin-owned for in-place updates', async () => {
+test('generated help migrates owned plain fields into the dedicated section', async () => {
 	const content = '---\n# True shows a subtle book label above Markdown notes.\nshowBookLabel: false\n---\nKeep this body';
 	const f = fixture({ showBookLabel: false }, content);
 	await f.service.ensureRoot();
-	assert.equal(f.fm.showBookLabel, false);
+	assert.equal(managed(f.fm, 'showBookLabel'), false);
 	assert.equal('book-tabs-showBookLabel' in f.fm, false);
 	await f.service.set('showBookLabel', true);
-	assert.equal(f.fm.showBookLabel, true);
+	assert.equal(managed(f.fm, 'showBookLabel'), true);
 	assert.equal('book-tabs-showBookLabel' in f.fm, false);
 });
 
@@ -218,4 +218,13 @@ test('an unsaved reversal during an earlier write remains available for the next
 	assert.equal(f.plugin.settings.showBookLabel, true);
 	await f.service.saveSettings();
 	assert.equal(managed(f.fm, 'showBookLabel'), true);
+});
+
+test('paused regeneration saves one selected global setting without populating other defaults', async () => {
+	const f = fixture();
+	(f.plugin as unknown as { frontmatterMaintenance: { paused: boolean } }).frontmatterMaintenance = { paused: true };
+	await f.service.ensureRoot();
+	assert.deepEqual(f.fm, {});
+	await f.service.set('showBookLabel', true);
+	assert.deepEqual(f.fm, { 'book-tabs': { showBookLabel: true } });
 });

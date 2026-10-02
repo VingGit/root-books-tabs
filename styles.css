@@ -813,35 +813,10 @@ input.scope-tabs-invalid-template-path:focus {
 		min-height: 14rem;
 	}
 }
-.scope-tabs-order-highlight {
-	position: fixed;
-	z-index: 999;
-	pointer-events: none;
-	border: 2px solid var(--scope-tabs-book-color);
-	background: rgb(255 255 255 / 10%);
-	box-shadow: 0 0 0 200vmax rgb(0 0 0 / 50%);
-}
-
-.scope-tabs-ordering .scope-tabs-book-header,
-.scope-tabs-ordering .scope-tabs-book-mode-selected > .nav-folder-children {
-	position: relative;
-	z-index: 1001;
-}
-
 .scope-tabs-order-button {
 	width: 30px;
 	height: 32px;
 	flex-shrink: 0;
-}
-
-.scope-tabs-order-button.scope-tabs-order-exit {
-	color: var(--text-error);
-	background: color-mix(in srgb, var(--text-error) 14%, transparent);
-}
-
-.scope-tabs-order-button.scope-tabs-order-exit:hover {
-	color: var(--text-on-accent);
-	background: var(--background-modifier-error);
 }
 
 .scope-tabs-order-direction {
@@ -867,50 +842,10 @@ input.scope-tabs-invalid-template-path:focus {
 	margin: 0;
 	height: 32px;
 }
-.scope-tabs-book-header .scope-tabs-order-direction + .scope-tabs-book-switcher.scope-tabs-order-cycle {
-	border-top-left-radius: 0;
-	border-bottom-left-radius: 0;
-}
 .scope-tabs-book-header .scope-tabs-order-button {
 	margin: 0;
 	height: 32px;
 	align-self: center;
-}
-.scope-tabs-book-switcher.scope-tabs-order-cycle::after { content: none; }
-.scope-tabs-ordering .scope-tabs-order-hover {
-	background: color-mix(in srgb, var(--scope-tabs-order-color) 18%, var(--background-secondary));
-}
-.scope-tabs-ordering .scope-tabs-order-selected {
-	background: color-mix(in srgb, var(--scope-tabs-order-color) 35%, var(--background-secondary));
-	outline: 1px solid var(--scope-tabs-order-color);
-}
-.scope-tabs-ordering .scope-tabs-order-fixed {
-	opacity: 0.5;
-	cursor: not-allowed;
-}
-.scope-tabs-ordering [data-scope-tabs-order-drop="before"],
-.scope-tabs-ordering [data-scope-tabs-order-drop="after"] {
-	position: relative;
-	box-shadow: none;
-}
-.scope-tabs-ordering [data-scope-tabs-order-drop="before"]::after,
-.scope-tabs-ordering [data-scope-tabs-order-drop="after"]::after {
-	content: '';
-	position: absolute;
-	left: var(--scope-tabs-order-drop-indent, 0);
-	right: 0;
-	height: 2px;
-	background: var(--scope-tabs-order-color);
-	pointer-events: none;
-}
-.scope-tabs-ordering [data-scope-tabs-order-drop="before"]::after { top: -1px; }
-.scope-tabs-ordering [data-scope-tabs-order-drop="after"]::after { bottom: -1px; }
-.scope-tabs-ordering [data-scope-tabs-order-drop="inside"] { outline: 2px solid var(--scope-tabs-order-color); outline-offset: -2px; }
-.scope-tabs-order-direction-override {
-	margin-left: auto;
-	padding-left: var(--size-4-2);
-	color: var(--text-faint);
-	font-size: var(--font-ui-smaller);
 }
 .scope-tabs-settings-section {
 	border: 1px solid var(--background-modifier-border);
@@ -920,26 +855,52 @@ input.scope-tabs-invalid-template-path:focus {
 }
 .scope-tabs-frontmatter-hidden .metadata-container { display: none !important; }
 .scope-tabs-frontmatter-visible .metadata-container { display: block !important; }
+/* Adapted from Article Navigator's default inline navigation (see THIRD_PARTY_NOTICES.md). */
 .scope-tabs-article-placeholders {
 	display: grid;
-	gap: var(--size-4-2);
-	padding: var(--size-4-2) var(--size-4-4);
+	grid-template-columns: 1fr 1fr;
+	gap: 16px;
+	margin: 16px 0 8px;
+	padding-top: 16px;
+	border-top: 1px solid var(--background-modifier-border);
 }
 .scope-tabs-article-placeholder {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: var(--size-4-2);
-	border: 1px dotted var(--text-faint);
-	border-radius: var(--radius-s);
-	padding: var(--size-4-2);
-	color: var(--text-muted);
-	background: color-mix(in srgb, var(--background-secondary) 72%, transparent);
+	position: relative;
+	min-width: 0;
+	padding: 12px 16px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	color: var(--text-normal);
+	background: var(--background-primary);
+	box-sizing: border-box;
+	transition: border-color 0.15s ease, transform 0.15s ease;
 }
-.scope-tabs-article-placeholder-close { order: 4; margin-left: auto; }
-.scope-tabs-article-placeholder-input { min-width: 8rem; flex: 1 1 10rem; }
-.scope-tabs-article-placeholder-preview { font-size: var(--font-ui-smaller); color: var(--text-faint); overflow-wrap: anywhere; flex: 1 1 12rem; }
+.scope-tabs-article-placeholder:hover {
+	border-color: var(--interactive-accent);
+	transform: translateY(-1px);
+}
+.scope-tabs-article-placeholder-previous { grid-column: 1; }
+.scope-tabs-article-placeholder-next { grid-column: 2; text-align: right; }
+.scope-tabs-article-placeholder-label {
+	display: block;
+	font-size: 0.78em;
+	color: var(--text-muted);
+	margin: 0 20px 4px 0;
+	letter-spacing: 0.02em;
+}
+.scope-tabs-article-placeholder-close { position: absolute; right: 8px; top: 8px; }
+.scope-tabs-article-placeholder-input { width: 100%; min-width: 0; font-weight: 600; }
+.scope-tabs-article-placeholder-preview { display: block; margin: 6px 0 8px; font-size: var(--font-ui-smaller); color: var(--text-faint); overflow-wrap: anywhere; }
+.markdown-source-view .scope-tabs-article-placeholders { margin-left: var(--file-margins, 0); margin-right: var(--file-margins, 0); }
+@media (max-width: 600px) {
+	.scope-tabs-article-placeholders { grid-template-columns: 1fr; }
+	.scope-tabs-article-placeholder-previous, .scope-tabs-article-placeholder-next { grid-column: 1; text-align: left; }
+}
 .scope-tabs-article-conflicts { max-height: 50vh; overflow-y: auto; }
+.scope-tabs-frontmatter-maintenance { flex-wrap: wrap; gap: 12px; }
+.scope-tabs-frontmatter-maintenance .setting-item-info { flex-basis: 100%; min-width: 0; margin-right: 0; }
+.scope-tabs-frontmatter-maintenance .setting-item-control { flex-wrap: wrap; flex-basis: 100%; justify-content: flex-start; gap: 8px; }
+.scope-tabs-frontmatter-maintenance select { max-width: 100%; }
 .scope-tabs-empty-book {
 	display: flex;
 	flex-direction: column;
@@ -957,8 +918,4 @@ input.scope-tabs-invalid-template-path:focus {
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 6px;
 	padding: 8px;
-}
-.scope-tabs-order-drop {
-	outline: 2px solid var(--interactive-accent);
-	outline-offset: -2px;
 }

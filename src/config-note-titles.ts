@@ -39,7 +39,7 @@ export type PropertyOverFileNameSyncResult =
 
 export function isValidConfigTitleProperty(value: string): boolean {
 	const key = value.trim().replace(/^book-tabs-/, '');
-	return key.length > 0 && !['aliases', 'creation-date', 'fileOrder', 'orderingType', 'orderingEnabled',
+	return key.length > 0 && !['book-tabs', 'aliases', 'creation-date', 'fileOrder', 'orderingType', 'orderingEnabled',
 		'forcedOrderingType', 'forcedOrderingDirection'].includes(key);
 }
 
@@ -48,6 +48,7 @@ export class ConfigNoteTitleService {
 	private queue: Promise<void> = Promise.resolve();
 
 	constructor(private readonly plugin: ConfigNoteTitleHost) {}
+	whenIdle(): Promise<void> { return this.queue; }
 
 	isManagedConfigNote(file: TFile): boolean {
 		if (file.extension !== 'md') return false;
