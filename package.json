@@ -1,37 +1,50 @@
 {
-	"name": "root-books-tabs",
-	"version": "0.1.8",
-	"description": "Focused first-level book explorer and tab/window navigation for Obsidian.",
-	"main": "main.js",
-	"type": "module",
-	"scripts": {
-		"dev": "node esbuild.config.mjs",
-		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-		"version": "node version-bump.mjs && git add manifest.json versions.json",
-		"lint": "eslint .",
-		"test": "node scripts/test.mjs"
-	},
-	"keywords": [
-		"obsidian",
-		"tabs",
-		"folders",
-		"navigation",
-		"quartz"
-	],
-	"license": "0-BSD",
-	"devDependencies": {
-		"@eslint/js": "^9.39.4",
-		"@types/node": "^22.15.17",
-		"esbuild": "0.25.5",
-		"eslint": "^9.39.4",
-		"eslint-plugin-obsidianmd": "^0.4.0",
-		"globals": "^17.6.0",
-		"jiti": "^2.6.1",
-		"obsidian": "latest",
-		"typescript": "^5.8.3",
-		"typescript-eslint": "^8.59.1"
-	},
-	"dependencies": {
-		"ignore": "7.0.5"
-	}
+  "name": "root-books-workspace",
+  "version": "0.9.0",
+  "description": "Obsidian workspace integration for folder-note books, portable appearance, note creation, dates, and sorting.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "npm run typecheck && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit --skipLibCheck",
+    "lint": "eslint src tests --max-warnings=0",
+    "format": "prettier . --check",
+    "format:write": "prettier . --write",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "check": "npm run format && npm run typecheck && npm run lint && npm test",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "keywords": [
+    "obsidian",
+    "folder-notes",
+    "sorting",
+    "frontmatter",
+    "quartz",
+    "books"
+  ],
+  "license": "0BSD",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VingGit/root-books-workspace.git"
+  },
+  "homepage": "https://github.com/VingGit/root-books-workspace",
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@types/node": "^24.10.0",
+    "esbuild": "^0.25.5",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-obsidianmd": "^0.4.0",
+    "globals": "^17.6.0",
+    "obsidian": "latest",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.1"
+  },
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10.9.2"
+  }
 }

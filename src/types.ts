@@ -1,89 +1,51 @@
-export type ColorMode = 'manual' | 'frontmatter';
-export type CardinalDirection = 'right' | 'left' | 'down' | 'up';
-export type BookSplitDirection = CardinalDirection | 'grid';
-export type TabInsertDirection = 'right' | 'end';
-export type TabDecorationStyle = 'underline' | 'background' | 'dot' | 'custom';
-export type CreationLocation = 'current-folder' | 'book-root';
-export type ManualTabTextColor = '#000000' | '#ffffff';
-export type MainBookSwitchBehavior = 'close-previous' | 'keep-open';
-export type BookNoteOpenMode = 'same-tab' | 'background-tab' | 'focused-tab';
-export type FileExplorerOpenBehavior = 'book-instance' | 'current-group';
-export type ExcludedFileGroupLocation = 'next-to-current' | 'popout';
-export type OrderingDirection = 'ascending' | 'descending';
-export type FrontmatterDisplayMode = 'inherit' | 'visible' | 'hidden' | 'source';
-export type IndexMoveDecision = 'ask' | 'block' | 'merge-frontmatter' | 'append-body' | 'replace-frontmatter' | 'replace-content' | 'swap';
-export type TemplateFileType = 'md' | 'canvas' | 'base';
-export type TemplateRuleTuple = [prefix: string, applyFilenameConvention: boolean];
-export type TemplateRule = Record<string, TemplateRuleTuple>;
+export const ECOSYSTEM_VERSION = "0.9.0";
 
-export interface ScopeTabsSettings {
-	colorMode: ColorMode;
-	manualColors: Record<string, string>;
-	manualTabTextColors: Record<string, ManualTabTextColor>;
-	configFileBaseName: string;
-	colorFrontmatterProperty: string;
-	tabTextFrontmatterProperty: string;
-	notifyMissingConfigFiles: boolean;
-	showBookLabel: boolean;
+export const REQUIRED_PLUGIN_IDS = [
+	"folder-notes",
+	"custom-sort",
+	"obsidian-front-matter-title-plugin",
+	"frontmatter-date-manager",
+] as const;
+
+export type RequiredPluginId = (typeof REQUIRED_PLUGIN_IDS)[number];
+
+export interface RootBooksWorkspaceSettings {
+	schemaVersion: 1;
+	metadataMigrationVersion: number;
+	lastValidDateFormat: string;
+	optionalFilenameTimeFormat: string;
 	colorTabs: boolean;
-	tabDecorationStyle: TabDecorationStyle;
-	tabCustomCss: string;
-	bookModeEnabled: boolean;
-	selectedBookId: string | null;
-	mainBookSwitchBehavior: MainBookSwitchBehavior;
-	defaultStartupBookId: string | null;
-	defaultStartupNotePath: string | null;
-	fileExplorerOpenBehavior: FileExplorerOpenBehavior;
-	colorBookSwitcher: boolean;
-	newNoteLocation: CreationLocation;
-	newFolderLocation: CreationLocation;
-	bookSplitDirection: BookSplitDirection;
-	gridOverflowDirection: CardinalDirection;
-	gridRows: number;
-	gridColumns: number;
-	orderingDirection: OrderingDirection;
-	indexMoveDecision: IndexMoveDecision;
-	excludedBookFolders: string[];
-	excludedFileGroupLocation: ExcludedFileGroupLocation;
-	templateFolder: string;
-	templateDateFormat: string;
-	templateMd: TemplateRule;
-	templateCanvas: TemplateRule;
-	templateBase: TemplateRule;
-	forceUpdateLinks: boolean;
-	tabInsertDirection: TabInsertDirection;
-	bookNoteOpenMode: BookNoteOpenMode;
-	frontmatterDisplayMode: FrontmatterDisplayMode;
-	bookNoteOpenModeOverrides: Record<string, BookNoteOpenMode>;
-	openBooksInExternalWindows: boolean;
-	indexTitleSync: boolean;
-	indexTitleFollowPlugin: boolean;
-	indexTitleProperty: string;
-	articleNavigatorPreviousProperty: string;
-	articleNavigatorNextProperty: string;
-	articleNavigatorSeeAlsoProperty: string;
-	articleNavigatorFollowPluginKeys: boolean;
-	articleNavigatorBlacklist: string;
-	articleNavigatorPreferFilenameDates: boolean;
+	showBookLabel: boolean;
 }
 
-export interface BookScope {
+export const DEFAULT_SETTINGS: RootBooksWorkspaceSettings = {
+	schemaVersion: 1,
+	metadataMigrationVersion: 0,
+	lastValidDateFormat: "DD.MM.YYYY",
+	optionalFilenameTimeFormat: "",
+	colorTabs: true,
+	showBookLabel: true,
+};
+
+export interface BookPanelMetadata {
+	icon: string;
+	accent: string;
+}
+
+export interface BookRecord {
 	id: string;
 	name: string;
 	folderPath: string;
+	indexPath: string;
+	panel: BookPanelMetadata;
 }
 
-export type ManagedGroupLocation = 'main' | 'popout';
-
-export interface PersistedGroupRecord {
-	kind: 'managed' | 'free' | 'excluded';
-	bookId?: string;
-	location: ManagedGroupLocation;
-}
-
-export interface ScopeTabsRuntimeStateV1 {
-	version: 1;
-	groups: Record<string, PersistedGroupRecord>;
-	bookOrder: string[];
-	gridBaseBookIds: string[];
+export interface IntegrationAudit {
+	id: RequiredPluginId;
+	name: string;
+	purpose: string;
+	installed: boolean;
+	enabled: boolean;
+	configured: boolean;
+	issues: string[];
 }

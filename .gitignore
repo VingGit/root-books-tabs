@@ -1,27 +1,6 @@
-# vscode
-.vscode 
-
-# Intellij
-*.iml
-.idea
-
-# npm
-node_modules
-
-# Don't include the compiled main.js file in the repo.
-# They should be uploaded to GitHub releases instead.
+node_modules/
 main.js
-
-# Exclude sourcemaps
-*.map
-
-# obsidian
-data.json
-
-# Local agent tooling and diagnostic harness output
-.agents/
 .tmp-tests/
+*.log
+.agents/
 skills-lock.json
-
-# Exclude macOS Finder (System Explorer) View States
-.DS_Store
