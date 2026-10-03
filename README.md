@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > Root Books Tabs is retired and will not receive further updates. Use
-> [Root Books Workspace](https://github.com/VingGit/root-books-workspace) for
+> [Root Books Workspace](https://github.com/VingGit/obsidian-root-books-workspace) for
 > the maintained replacement.
 
 Root Books Workspace keeps the portable book metadata, note workflow,
